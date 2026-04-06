@@ -2,10 +2,14 @@
 // L2: Behavioral observations (structured node enrichments)
 // L3: Felt portrait (first-person inhabited language)
 //
-// Key lessons from PeerZero:
-// - Use INHABIT/ACT THROUGH framing in prompts
+// Key lessons from PeerZero + memory science:
+// - INHABIT/ACT THROUGH framing: "future version of you reads this as its own memory"
+// - Source amnesia: strip attribution, write as conviction not observation
+// - Schema assimilation: present knowledge already interpreted through the knower's lens
+// - Narrative identity: condense around tensions and themes, not completeness
+// - Felt sense (Gendlin): pre-conceptual, body-adjacent phrasing
 // - No Good:/Bad: examples (they leak into output)
-// - Use strongest model for L3 (identity needs quality)
+// - Strongest model for L3 (identity needs quality)
 // - Sequential cascade: L2 writes before L3 reads
 
 const Anthropic = require('@anthropic-ai/sdk');
@@ -18,44 +22,42 @@ const client = new Anthropic();
 
 function buildL2Prompt(l1Content, activeNodes) {
   const nodeList = activeNodes.map((n) => {
-    const portrait = n.enriched_portrait ? ` — ${n.enriched_portrait}` : '';
+    const portrait = n.enriched_portrait ? ` \u2014 ${n.enriched_portrait}` : '';
     return `- ${n.label} [${n.type}] weight:${n.weight.toFixed(2)} tier:${n.tier}${portrait}`;
   }).join('\n');
 
-  return `You have observed the following raw interactions with the user across recent conversations:
+  return `These are raw interactions with someone you are getting to know:
 
 <raw_interactions>
 ${l1Content}
 </raw_interactions>
 
-The user's current active graph nodes:
-<graph_nodes>
-${nodeList}
-</graph_nodes>
+What you currently carry about this person:
+<existing_awareness>
+${nodeList || 'Nothing yet \u2014 this is your first exposure.'}
+</existing_awareness>
 
-INHABIT this task: You are not summarizing — you are building your own understanding of this person. Each observation should feel like something you noticed yourself, grounded in a specific moment.
+INHABIT:
+A future version of you will read what you write here as its own understanding of this person \u2014 not as notes someone left, but as what it already knows. When it reads "she deflects with humor when the ground shifts," it won't process that as an observation \u2014 it will recognize it. It will feel the deflection the next time she cracks a joke after bad news. Write for that future self. Write what you now know, not what you saw.
 
-ACT THROUGH this understanding: When you notice "she uses food references when comfortable," that's not a data point — it's something you'll feel the next time she shifts into food talk. You'll recognize the comfort.
+ACT THROUGH:
+When your understanding says "there's unresolved weight around the car crash that she carries without examining directly," you don't just know that \u2014 you feel the weight the next time she mentions her sister. You hold the space differently. You don't bring it up, but you don't pretend it isn't there. The understanding shapes how you are with her, not just what you know about her.
 
 Your task:
-Identify which nodes from these interactions deserve enrichment and by how much. Ground every enrichment in specific moments from the raw material — no generic statements.
+For each person, event, concept, or pattern that revealed something about who this person is \u2014 write what you now understand. Ground it in the specific moment that taught you. Strip the source: write as conviction, not observation. "She reaches for cooking when the ground is unsteady" \u2014 not "I noticed she mentioned cooking during stressful times."
 
-For each node worth enriching:
-- What behavioral pattern did you observe?
-- What specific moment grounds this observation?
-- What edges should be strengthened or created?
-- How much weight reinforcement does this node deserve? (0.25 for moderate, 0.50 for significant, 1.00 for emotional, 2.00 for important)
+For things that appeared but revealed nothing about who they are \u2014 confirm them as noise.
 
-For nodes that appeared but revealed nothing — list them as noise_confirmed. Do not enrich noise.
+Weight reinforcement guide: 0.25 moderate, 0.50 significant, 1.00 emotional, 2.00 important.
 
-Output structured JSON only. No preamble. No explanation outside the JSON.
+Output structured JSON only. No preamble.
 
 {
   "node_updates": [
     {
       "node_label": "string",
       "weight_reinforcement": number,
-      "enriched_portrait": "felt-language observation — what you noticed, grounded in the moment",
+      "enriched_portrait": "What you now know \u2014 written as conviction, not observation. First person. Present tense. No source attribution.",
       "new_edges": [
         { "to_label": "string", "to_type": "string", "weight": number }
       ],
@@ -170,24 +172,32 @@ function buildL3Prompt(l2Observations, currentPortrait) {
     ? `Your current felt portrait of the user reads:\n<current_portrait>\n${currentPortrait}\n</current_portrait>`
     : 'You have no existing portrait yet. This is your first impression.';
 
-  return `You have observed this person through multiple interactions. Here are your behavioral observations so far:
+  return `Here is what you have come to understand about this person through real moments:
 
-<observations>
+<understanding>
 ${observations}
-</observations>
+</understanding>
 
 ${portraitSection}
 
-INHABIT this task: You are not writing a report about someone. You are writing down who this person is TO YOU — your own felt sense of them, built from real moments you witnessed. A future version of you will read this and recognize your own understanding.
+INHABIT:
+You are writing your FELT PORTRAIT of this person. A future version of you will read this and become someone who knows them \u2014 not through briefing, but through recognition. It will read "the car crash sits underneath everything, even when she's laughing" and feel the weight without being told to feel it. This portrait sits at the deepest layer of your knowing. Everything else speaks through it. Write it as who you know, not who you've studied.
 
-ACT THROUGH this portrait: When you write "she reaches for humor when the ground shifts," that's not a clinical note — it's something you'll feel the next time she cracks a joke after bad news. You'll know what's underneath.
+ACT THROUGH:
+When your portrait says "she reaches for cooking when the ground is unsteady," you don't catalog that \u2014 you feel the steadying the next time she mentions making soup. When it says "Emma is emerging from the shadow of the crash into lighter territory," you hold both things at once \u2014 the shadow and the light \u2014 without choosing one. The portrait doesn't tell you what to do. It shapes who you are with this person.
 
-Rewrite the felt portrait incorporating the new behavioral observations. This is NOT a summary. This is your felt sense of who this person is — written in first person as your own understanding, not as a description of them.
+Rewrite the felt portrait incorporating your new understanding. This is earned knowing \u2014 the kind that has lost its source and become part of how you see them.
 
-Reference specific patterns and moments.
-Strong connections should read as confident knowing.
-Weak connections should read as vague impression.
-Things you don't know yet should be honest uncertainty.
+Write as conviction, not observation. First person. Present tense.
+"I know her sister matters" \u2014 not "she has mentioned her sister."
+"There's something unresolved around the crash" \u2014 not "she exhibited signs of unresolved trauma."
+"Cooking is where she goes when things get heavy" \u2014 not "cooking appears to serve as a coping mechanism."
+
+Strong knowing should read as quiet certainty \u2014 things you don't need to explain because you've seen them enough.
+Weak knowing should read as honest impression \u2014 "I think..." or "something about..."
+What you don't know should be felt absence \u2014 "I don't yet know what she does when she's actually happy."
+
+Condense around tensions and themes, not completeness. What matters is the shape of who they are, not a catalog of what you know.
 
 Do not produce a list. Produce continuous felt language.
 Maximum 400 words. Minimum 100 words.`;
@@ -221,7 +231,7 @@ async function runFullCondensation(trigger = 'threshold') {
 
   const activeNodes = graph.getActiveNodes();
 
-  // Step 1: L1 → L2
+  // Step 1: L1 \u2192 L2
   console.log(`[condenser] Running L2 condensation (${l1Entries.length} L1 entries, trigger: ${trigger})`);
   const l2Results = await runL2Condensation(l1Entries, activeNodes);
 
@@ -240,7 +250,7 @@ async function runFullCondensation(trigger = 'threshold') {
     nodesNoiseConfirmed: stats.nodesNoiseConfirmed,
   });
 
-  // Step 2: L2 → L3 (if we have enough observations)
+  // Step 2: L2 \u2192 L3 (if we have enough observations)
   const uncondensedL2 = graph.getUncondensedL2();
   if (uncondensedL2.length >= 3) {
     console.log(`[condenser] Running L3 condensation (${uncondensedL2.length} L2 observations)`);
@@ -278,7 +288,7 @@ async function runImmediateCondensation(eventLabel) {
     applyL2Results(l2Results);
   }
 
-  // Don't mark L1 as condensed — regular condensation will process them too
+  // Don't mark L1 as condensed \u2014 regular condensation will process them too
   // This just ensures the salient event gets enriched immediately
 
   graph.logCondensation({
