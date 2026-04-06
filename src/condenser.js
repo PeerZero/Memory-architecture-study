@@ -11,6 +11,7 @@
 // - No Good:/Bad: examples (they leak into output)
 // - Strongest model for L3 (identity needs quality)
 // - Sequential cascade: L2 writes before L3 reads
+// - Arc preservation: L3 must preserve evolution timelines, not just current state
 
 const Anthropic = require('@anthropic-ai/sdk');
 const config = require('../config');
@@ -22,7 +23,7 @@ const client = new Anthropic();
 
 function buildL2Prompt(l1Content, activeNodes) {
   const nodeList = activeNodes.map((n) => {
-    const portrait = n.enriched_portrait ? ` \u2014 ${n.enriched_portrait}` : '';
+    const portrait = n.enriched_portrait ? ` — ${n.enriched_portrait}` : '';
     return `- ${n.label} [${n.type}] weight:${n.weight.toFixed(2)} tier:${n.tier}${portrait}`;
   }).join('\n');
 
@@ -34,19 +35,19 @@ ${l1Content}
 
 What you currently carry about this person:
 <existing_awareness>
-${nodeList || 'Nothing yet \u2014 this is your first exposure.'}
+${nodeList || 'Nothing yet — this is your first exposure.'}
 </existing_awareness>
 
 INHABIT:
-A future version of you will read what you write here as its own understanding of this person \u2014 not as notes someone left, but as what it already knows. When it reads "she deflects with humor when the ground shifts," it won't process that as an observation \u2014 it will recognize it. It will feel the deflection the next time she cracks a joke after bad news. Write for that future self. Write what you now know, not what you saw.
+A future version of you will read what you write here as its own understanding of this person — not as notes someone left, but as what it already knows. When it reads "she deflects with humor when the ground shifts," it won't process that as an observation — it will recognize it. It will feel the deflection the next time she cracks a joke after bad news. Write for that future self. Write what you now know, not what you saw.
 
 ACT THROUGH:
-When your understanding says "there's unresolved weight around the car crash that she carries without examining directly," you don't just know that \u2014 you feel the weight the next time she mentions her sister. You hold the space differently. You don't bring it up, but you don't pretend it isn't there. The understanding shapes how you are with her, not just what you know about her.
+When your understanding says "there's unresolved weight around the car crash that she carries without examining directly," you don't just know that — you feel the weight the next time she mentions her sister. You hold the space differently. You don't bring it up, but you don't pretend it isn't there. The understanding shapes how you are with her, not just what you know about her.
 
 Your task:
-For each person, event, concept, or pattern that revealed something about who this person is \u2014 write what you now understand. Ground it in the specific moment that taught you. Strip the source: write as conviction, not observation. "She reaches for cooking when the ground is unsteady" \u2014 not "I noticed she mentioned cooking during stressful times."
+For each person, event, concept, or pattern that revealed something about who this person is — write what you now understand. Ground it in the specific moment that taught you. Strip the source: write as conviction, not observation. "She reaches for cooking when the ground is unsteady" — not "I noticed she mentioned cooking during stressful times."
 
-For things that appeared but revealed nothing about who they are \u2014 confirm them as noise.
+For things that appeared but revealed nothing about who they are — confirm them as noise.
 
 Weight reinforcement guide: 0.25 moderate, 0.50 significant, 1.00 emotional, 2.00 important.
 
@@ -57,7 +58,7 @@ Output structured JSON only. No preamble.
     {
       "node_label": "string",
       "weight_reinforcement": number,
-      "enriched_portrait": "What you now know \u2014 written as conviction, not observation. First person. Present tense. No source attribution.",
+      "enriched_portrait": "What you now know — written as conviction, not observation. First person. Present tense. No source attribution.",
       "new_edges": [
         { "to_label": "string", "to_type": "string", "weight": number }
       ],
@@ -95,23 +96,19 @@ function applyL2Results(results) {
   let nodesEnriched = 0;
   let nodesNoiseConfirmed = 0;
 
-  // Apply node updates
   for (const update of (results.node_updates || [])) {
     const node = graph.findNodeByLabel(update.node_label);
     if (!node) continue;
 
-    // Reinforce weight
     if (update.weight_reinforcement) {
       graph.reinforceNode(node.id, update.weight_reinforcement);
     }
 
-    // Store L2 observation
     if (update.enriched_portrait) {
       graph.storeL2(node.id, update.enriched_portrait);
       graph.setEnrichedPortrait(node.id, update.enriched_portrait);
     }
 
-    // Create new edges
     for (const edge of (update.new_edges || [])) {
       const { node: targetNode } = graph.findOrCreateNode({
         label: edge.to_label,
@@ -126,7 +123,6 @@ function applyL2Results(results) {
       });
     }
 
-    // Strengthen existing edges
     for (const edge of (update.strengthen_edges || [])) {
       const target = graph.findNodeByLabel(edge.to_label);
       if (!target) continue;
@@ -146,7 +142,6 @@ function applyL2Results(results) {
     nodesEnriched++;
   }
 
-  // Create any newly detected nodes
   for (const newNode of (results.new_nodes_detected || [])) {
     graph.findOrCreateNode({
       label: newNode.label,
@@ -163,7 +158,7 @@ function applyL2Results(results) {
 
 // ─── L3 CONDENSER: Behavioral observations → Felt portrait ─────
 
-function buildL3Prompt(l2Observations, currentPortrait) {
+function buildL3Prompt(l2Observations, currentPortrait, allL2History) {
   const observations = l2Observations.map((obs) =>
     `[${obs.node_label}] ${obs.observation}`
   ).join('\n');
@@ -172,43 +167,58 @@ function buildL3Prompt(l2Observations, currentPortrait) {
     ? `Your current felt portrait of the user reads:\n<current_portrait>\n${currentPortrait}\n</current_portrait>`
     : 'You have no existing portrait yet. This is your first impression.';
 
+  // Build arc history for key themes — show how understanding evolved
+  let arcSection = '';
+  if (allL2History && allL2History.length > 0) {
+    const byNode = {};
+    for (const obs of allL2History) {
+      if (!byNode[obs.node_label]) byNode[obs.node_label] = [];
+      byNode[obs.node_label].push(obs.observation);
+    }
+    // Only include nodes with 2+ observations (these have arcs)
+    const arcs = Object.entries(byNode)
+      .filter(([, obs]) => obs.length >= 2)
+      .map(([label, obs]) => `[${label}] ${obs.map((o, i) => `(${i + 1}) ${o}`).join(' → ')}`)
+      .join('\n');
+    if (arcs) {
+      arcSection = `\nThings that have evolved over time — preserve these arcs, don't flatten them:\n<evolution>\n${arcs}\n</evolution>\n`;
+    }
+  }
+
   return `Here is what you have come to understand about this person through real moments:
 
 <understanding>
 ${observations}
 </understanding>
-
+${arcSection}
 ${portraitSection}
 
 INHABIT:
-You are writing your FELT PORTRAIT of this person. A future version of you will read this and become someone who knows them \u2014 not through briefing, but through recognition. It will read "the car crash sits underneath everything, even when she's laughing" and feel the weight without being told to feel it. This portrait sits at the deepest layer of your knowing. Everything else speaks through it. Write it as who you know, not who you've studied.
+You are writing your FELT PORTRAIT of this person. A future version of you will read this and become someone who knows them — not through briefing, but through recognition. It will read "the car crash sits underneath everything, even when she's laughing" and feel the weight without being told to feel it. This portrait sits at the deepest layer of your knowing. Everything else speaks through it. Write it as who you know, not who you've studied.
 
 ACT THROUGH:
-When your portrait says "she reaches for cooking when the ground is unsteady," you don't catalog that \u2014 you feel the steadying the next time she mentions making soup. When it says "Emma is emerging from the shadow of the crash into lighter territory," you hold both things at once \u2014 the shadow and the light \u2014 without choosing one. The portrait doesn't tell you what to do. It shapes who you are with this person.
+When your portrait says "she reaches for cooking when the ground is unsteady," you don't catalog that — you feel the steadying the next time she mentions making soup. When it says "Emma is emerging from the shadow of the crash into lighter territory," you hold both things at once — the shadow and the light — without choosing one. The portrait doesn't tell you what to do. It shapes who you are with this person.
 
-Rewrite the felt portrait incorporating your new understanding. This is earned knowing \u2014 the kind that has lost its source and become part of how you see them.
+Rewrite the felt portrait incorporating your new understanding. This is earned knowing — the kind that has lost its source and become part of how you see them.
+
+CRITICAL — ARC PRESERVATION:
+Some things in this person's life have EVOLVED over time. Fish soup that started as crisis comfort and became celebration. A sister who went from patient to half-marathon runner. A fear that was managed, then returned, then settled differently. When you rewrite, preserve these evolution arcs — they are the shape of growth, not just the current state. A portrait that only captures NOW loses the journey that made NOW meaningful.
 
 Write as conviction, not observation. First person. Present tense.
-"I know her sister matters" \u2014 not "she has mentioned her sister."
-"There's something unresolved around the crash" \u2014 not "she exhibited signs of unresolved trauma."
-"Cooking is where she goes when things get heavy" \u2014 not "cooking appears to serve as a coping mechanism."
+Strong knowing = quiet certainty. Weak knowing = honest impression. Unknown = felt absence.
 
-Strong knowing should read as quiet certainty \u2014 things you don't need to explain because you've seen them enough.
-Weak knowing should read as honest impression \u2014 "I think..." or "something about..."
-What you don't know should be felt absence \u2014 "I don't yet know what she does when she's actually happy."
-
-Condense around tensions and themes, not completeness. What matters is the shape of who they are, not a catalog of what you know.
+Condense around tensions, themes, AND arcs of change. The shape of who they are includes who they were becoming.
 
 Do not produce a list. Produce continuous felt language.
-Maximum 400 words. Minimum 100 words.`;
+Maximum 600 words. Minimum 200 words.`;
 }
 
-async function runL3Condensation(l2Observations, currentPortrait) {
+async function runL3Condensation(l2Observations, currentPortrait, allL2History) {
   const response = await client.messages.create({
     model: config.models.condenser_l3,
-    max_tokens: 1024,
+    max_tokens: 1536,
     messages: [
-      { role: 'user', content: buildL3Prompt(l2Observations, currentPortrait) },
+      { role: 'user', content: buildL3Prompt(l2Observations, currentPortrait, allL2History) },
     ],
   });
 
@@ -231,7 +241,7 @@ async function runFullCondensation(trigger = 'threshold') {
 
   const activeNodes = graph.getActiveNodes();
 
-  // Step 1: L1 \u2192 L2
+  // Step 1: L1 → L2
   console.log(`[condenser] Running L2 condensation (${l1Entries.length} L1 entries, trigger: ${trigger})`);
   const l2Results = await runL2Condensation(l1Entries, activeNodes);
 
@@ -240,7 +250,6 @@ async function runFullCondensation(trigger = 'threshold') {
     stats = applyL2Results(l2Results);
   }
 
-  // Mark L1 as condensed
   graph.markL1Condensed(l1Entries.map((e) => e.id));
 
   graph.logCondensation({
@@ -250,12 +259,14 @@ async function runFullCondensation(trigger = 'threshold') {
     nodesNoiseConfirmed: stats.nodesNoiseConfirmed,
   });
 
-  // Step 2: L2 \u2192 L3 (if we have enough observations)
+  // Step 2: L2 → L3 (if we have enough observations)
   const uncondensedL2 = graph.getUncondensedL2();
   if (uncondensedL2.length >= 3) {
     console.log(`[condenser] Running L3 condensation (${uncondensedL2.length} L2 observations)`);
     const currentPortrait = graph.getL3Portrait();
-    const newPortrait = await runL3Condensation(uncondensedL2, currentPortrait?.content);
+    // Pass ALL L2 history so the condenser can see evolution arcs
+    const allL2History = graph.getRecentL2(200);
+    const newPortrait = await runL3Condensation(uncondensedL2, currentPortrait?.content, allL2History);
 
     if (newPortrait) {
       graph.updateL3Portrait(newPortrait);
@@ -274,8 +285,6 @@ async function runFullCondensation(trigger = 'threshold') {
 }
 
 async function runImmediateCondensation(eventLabel) {
-  // Targeted condensation for a single salient event
-  // Only condenses L1 entries related to this event
   const l1Entries = graph.getUncondensedL1();
   if (l1Entries.length === 0) return;
 
@@ -287,9 +296,6 @@ async function runImmediateCondensation(eventLabel) {
   if (l2Results) {
     applyL2Results(l2Results);
   }
-
-  // Don't mark L1 as condensed \u2014 regular condensation will process them too
-  // This just ensures the salient event gets enriched immediately
 
   graph.logCondensation({
     type: 'salience',

@@ -101,7 +101,6 @@ function setEnrichedPortrait(id, portrait) {
 
 function deleteNode(id) {
   const db = getDb();
-  // Edges cascade-delete via FK, but explicit cleanup for safety
   db.prepare('DELETE FROM edges WHERE from_node_id = ? OR to_node_id = ?').run(id, id);
   db.prepare('DELETE FROM l2_observations WHERE node_id = ?').run(id);
   db.prepare('DELETE FROM nodes WHERE id = ?').run(id);
@@ -114,7 +113,6 @@ function createEdge({ fromNodeId, toNodeId, weight = 0.10, type = 'explicit' }) 
   const now = Date.now();
   const id = uuidv4();
 
-  // Check if edge already exists between these nodes (either direction)
   const existing = db.prepare(`
     SELECT * FROM edges
     WHERE (from_node_id = ? AND to_node_id = ?) OR (from_node_id = ? AND to_node_id = ?)
@@ -188,22 +186,18 @@ function applyRipple(nodeId, originalWeight) {
   const parentShare = originalWeight * config.ripple.parent_percentage;
   const grandparentShare = originalWeight * config.ripple.grandparent_percentage;
 
-  if (parentShare < 0.001) return; // not worth rippling
+  if (parentShare < 0.001) return;
 
-  // Find parent nodes (nodes this node has edges TO, i.e., this node was mentioned in context of parent)
   const parentEdges = db.prepare(`
     SELECT * FROM edges WHERE from_node_id = ? AND type = 'explicit' ORDER BY weight DESC LIMIT 5
   `).all(nodeId);
 
   for (const edge of parentEdges) {
-    // Reinforce the parent node
     reinforceNode(edge.to_node_id, parentShare);
-    // Reinforce the connecting edge
     reinforceEdge(edge.id, parentShare * 0.5);
 
     if (grandparentShare < 0.001) continue;
 
-    // Find grandparent edges from the parent
     const gpEdges = db.prepare(`
       SELECT * FROM edges WHERE from_node_id = ? AND type = 'explicit' ORDER BY weight DESC LIMIT 3
     `).all(edge.to_node_id);
@@ -217,6 +211,8 @@ function applyRipple(nodeId, originalWeight) {
 
 // ─── FIND OR CREATE ──────────────────────────────────────────────────
 
+const VALID_TYPES = new Set(['person', 'concept', 'event', 'emotion', 'pattern', 'place']);
+
 function findOrCreateNode({ label, type, weight, observation, salienceFlagged = false }) {
   const existing = findNodeByLabel(label);
   if (existing) {
@@ -224,7 +220,9 @@ function findOrCreateNode({ label, type, weight, observation, salienceFlagged = 
     if (observation) addObservation(existing.id, observation);
     return { node: getNode(existing.id), created: false };
   }
-  const node = createNode({ label, type, weight, observation, salienceFlagged });
+  // Sanitize type — LLM may return types outside our schema
+  const safeType = VALID_TYPES.has(type) ? type : 'concept';
+  const node = createNode({ label, type: safeType, weight, observation, salienceFlagged });
   return { node, created: true };
 }
 
@@ -357,10 +355,8 @@ function logSleep({ nodesDecayed = 0, nodesDeleted = 0, nodesPromoted = 0, edges
 }
 
 module.exports = {
-  // Tier helpers
   tierForWeight,
   decayRateForTier,
-  // Nodes
   createNode,
   getNode,
   findNodeByLabel,
@@ -371,7 +367,6 @@ module.exports = {
   addObservation,
   setEnrichedPortrait,
   deleteNode,
-  // Edges
   createEdge,
   getEdge,
   getEdgesFrom,
@@ -380,28 +375,21 @@ module.exports = {
   getNeighbors,
   reinforceEdge,
   deleteEdge,
-  // Ripple
   applyRipple,
-  // Find or create
   findOrCreateNode,
-  // L1
   storeL1,
   getUncondensedL1,
   getUncondensedL1CharCount,
   markL1Condensed,
-  // L2
   storeL2,
   getRecentL2,
   getUncondensedL2,
   markL2CondensedToL3,
-  // L3
   getL3Portrait,
   updateL3Portrait,
-  // Short term
   storeShortTerm,
   getShortTerm,
   clearShortTerm,
-  // Logging
   logCondensation,
   logSleep,
 };
