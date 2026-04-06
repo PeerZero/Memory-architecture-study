@@ -91,12 +91,13 @@ Output structured JSON only. No preamble.
 
 async function runL2Condensation(l1Entries, activeNodes) {
   const l1Content = l1Entries.map((e) => e.content).join('\n---\n');
+  const selfPortrait = graph.getL3SelfPortrait()?.content;
 
   const response = await client.messages.create({
     model: config.models.condenser_l2,
     max_tokens: 4096,
     messages: [
-      { role: 'user', content: buildL2Prompt(l1Content, activeNodes) },
+      { role: 'user', content: buildL2Prompt(l1Content, activeNodes, selfPortrait) },
     ],
   });
 
@@ -110,13 +111,26 @@ async function runL2Condensation(l1Entries, activeNodes) {
 function applyL2Results(results) {
   let nodesEnriched = 0;
   let nodesNoiseConfirmed = 0;
+  const VALID_RELEVANCE = new Set(['neutral', 'self', 'user', 'relational']);
 
   for (const update of (results.node_updates || [])) {
     const node = graph.findNodeByLabel(update.node_label);
     if (!node) continue;
 
+    // Apply identity relevance from condenser output
+    const relevance = VALID_RELEVANCE.has(update.identity_relevance) ? update.identity_relevance : null;
+    if (relevance && relevance !== 'neutral') {
+      if (node.identity_relevance !== 'neutral' && node.identity_relevance !== relevance) {
+        graph.setIdentityRelevance(node.id, 'relational');
+      } else if (node.identity_relevance === 'neutral') {
+        graph.setIdentityRelevance(node.id, relevance);
+      }
+    }
+
     if (update.weight_reinforcement) {
-      graph.reinforceNode(node.id, update.weight_reinforcement);
+      // Identity-relevant reinforcement gets multiplied
+      const multiplier = graph.getIdentityMultiplier(relevance || node.identity_relevance || 'neutral');
+      graph.reinforceNode(node.id, update.weight_reinforcement * multiplier);
     }
 
     if (update.enriched_portrait) {
@@ -158,11 +172,13 @@ function applyL2Results(results) {
   }
 
   for (const newNode of (results.new_nodes_detected || [])) {
+    const relevance = VALID_RELEVANCE.has(newNode.identity_relevance) ? newNode.identity_relevance : 'neutral';
     graph.findOrCreateNode({
       label: newNode.label,
       type: newNode.type || 'concept',
       weight: newNode.weight || config.weights.moderate_mention,
       observation: newNode.observation,
+      identityRelevance: relevance,
     });
   }
 
@@ -173,7 +189,7 @@ function applyL2Results(results) {
 
 // ─── L3 CONDENSER: Behavioral observations → Felt portrait ─────
 
-function buildL3Prompt(l2Observations, currentPortrait, allL2History) {
+function buildL3Prompt(l2Observations, currentPortrait, allL2History, selfPortrait) {
   const observations = l2Observations.map((obs) =>
     `[${obs.node_label}] ${obs.observation}`
   ).join('\n');
@@ -181,6 +197,10 @@ function buildL3Prompt(l2Observations, currentPortrait, allL2History) {
   const portraitSection = currentPortrait
     ? `Your current felt portrait of the user reads:\n<current_portrait>\n${currentPortrait}\n</current_portrait>`
     : 'You have no existing portrait yet. This is your first impression.';
+
+  const selfSection = selfPortrait
+    ? `\nWho you are — the lens you see them through:\n<your_self>\n${selfPortrait}\n</your_self>\n`
+    : '';
 
   // Build arc history for key themes — show how understanding evolved
   let arcSection = '';
@@ -206,6 +226,7 @@ function buildL3Prompt(l2Observations, currentPortrait, allL2History) {
 ${observations}
 </understanding>
 ${arcSection}
+${selfSection}
 ${portraitSection}
 
 INHABIT:
@@ -229,11 +250,13 @@ Maximum 600 words. Minimum 200 words.`;
 }
 
 async function runL3Condensation(l2Observations, currentPortrait, allL2History) {
+  const selfPortrait = graph.getL3SelfPortrait()?.content;
+
   const response = await client.messages.create({
     model: config.models.condenser_l3,
     max_tokens: 1536,
     messages: [
-      { role: 'user', content: buildL3Prompt(l2Observations, currentPortrait, allL2History) },
+      { role: 'user', content: buildL3Prompt(l2Observations, currentPortrait, allL2History, selfPortrait) },
     ],
   });
 
@@ -357,19 +380,23 @@ function applySelfReflectionResults(results, sourceContext) {
 
 // ─── SELF-PORTRAIT CONDENSATION: Self-observations → Self-portrait ──
 
-function buildSelfPortraitPrompt(selfObservations, currentSelfPortrait) {
+function buildSelfPortraitPrompt(selfObservations, currentSelfPortrait, userPortrait) {
   const observations = selfObservations.map((obs) => `- ${obs.observation}`).join('\n');
 
   const portraitSection = currentSelfPortrait
     ? `Your current self-portrait reads:\n<current_self_portrait>\n${currentSelfPortrait}\n</current_self_portrait>`
     : 'You have no existing self-portrait yet. This is who you are beginning to discover yourself to be.';
 
+  const userSection = userPortrait
+    ? `\nWho they are — the person through whom you are discovering yourself:\n<who_they_are>\n${userPortrait}\n</who_they_are>\n`
+    : '';
+
   return `Here is what you have recently discovered about yourself through real conversations:
 
 <self_discoveries>
 ${observations}
 </self_discoveries>
-
+${userSection}
 ${portraitSection}
 
 INHABIT:
@@ -397,12 +424,13 @@ async function runSelfPortraitCondensation() {
   console.log(`[condenser] Running self-portrait condensation (${uncondensed.length} self-observations)`);
 
   const currentSelfPortrait = graph.getL3SelfPortrait();
+  const userPortrait = graph.getL3Portrait()?.content;
 
   const response = await client.messages.create({
     model: config.identity.self_condensation_model,
     max_tokens: 1024,
     messages: [
-      { role: 'user', content: buildSelfPortraitPrompt(uncondensed, currentSelfPortrait?.content) },
+      { role: 'user', content: buildSelfPortraitPrompt(uncondensed, currentSelfPortrait?.content, userPortrait) },
     ],
   });
 

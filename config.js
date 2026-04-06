@@ -30,6 +30,7 @@ module.exports = {
   ripple: {
     parent_percentage: 0.20,      // immediate parent gets 20%
     grandparent_percentage: 0.10, // grandparent gets 10%
+    cross_identity_bonus: 1.5,    // 50% bonus when ripple crosses identity boundary (self↔user)
   },
 
   // CO-OCCURRENCE — edges created by sleep consolidation

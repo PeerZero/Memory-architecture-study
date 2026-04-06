@@ -188,13 +188,27 @@ function applyRipple(nodeId, originalWeight) {
 
   if (parentShare < 0.001) return;
 
+  const sourceNode = getNode(nodeId);
+  const sourceRelevance = sourceNode?.identity_relevance || 'neutral';
+
   const parentEdges = db.prepare(`
     SELECT * FROM edges WHERE from_node_id = ? AND type = 'explicit' ORDER BY weight DESC LIMIT 5
   `).all(nodeId);
 
   for (const edge of parentEdges) {
-    reinforceNode(edge.to_node_id, parentShare);
-    reinforceEdge(edge.id, parentShare * 0.5);
+    const targetNode = getNode(edge.to_node_id);
+    const targetRelevance = targetNode?.identity_relevance || 'neutral';
+
+    // Cross-identity bonus: ripple that crosses the identity boundary gets amplified.
+    // This is what keeps the graph from splitting into two isolated clusters.
+    // A self-node reinforcing a user-node (or vice versa) means the bot is
+    // connecting who it is to who they are — that bridge should be strong.
+    const crossesIdentity = sourceRelevance !== 'neutral' && targetRelevance !== 'neutral'
+      && sourceRelevance !== targetRelevance;
+    const bridgeBonus = crossesIdentity ? config.ripple.cross_identity_bonus : 1.0;
+
+    reinforceNode(edge.to_node_id, parentShare * bridgeBonus);
+    reinforceEdge(edge.id, parentShare * 0.5 * bridgeBonus);
 
     if (grandparentShare < 0.001) continue;
 
@@ -252,6 +266,55 @@ function findOrCreateNode({ label, type, weight, observation, salienceFlagged = 
   const effectiveWeight = (weight || config.weights.passing_mention) * getIdentityMultiplier(identityRelevance);
   const node = createNode({ label, type: safeType, weight: effectiveWeight, observation, salienceFlagged, identityRelevance });
   return { node, created: true };
+}
+
+// ─── RELATIONAL RETRIEVAL ────────────────────────────────────────────
+// Instead of retrieving nodes in isolation, find clusters where
+// self and user nodes connect — these are the relational bridges
+// that make memory feel like knowing, not like reading two lists.
+
+function getRelationalClusters(activeNodes) {
+  const nodeMap = new Map(activeNodes.map((n) => [n.id, n]));
+  const clusters = [];   // { bridge: edge, selfNode, userNode, strength }
+  const clusteredIds = new Set();
+
+  // Find all edges that cross the identity boundary
+  for (const node of activeNodes) {
+    if (node.identity_relevance === 'neutral') continue;
+
+    const edges = getEdgesFrom(node.id).concat(getEdgesTo(node.id));
+    for (const edge of edges) {
+      const otherId = edge.from_node_id === node.id ? edge.to_node_id : edge.from_node_id;
+      const other = nodeMap.get(otherId);
+      if (!other) continue;
+      if (other.identity_relevance === 'neutral') continue;
+      if (other.identity_relevance === node.identity_relevance) continue;
+
+      // This edge crosses the identity boundary
+      const key = [node.id, other.id].sort().join('|');
+      if (clusters.find((c) => [c.selfNode.id, c.userNode.id].sort().join('|') === key)) continue;
+
+      const selfNode = node.identity_relevance === 'self' || node.identity_relevance === 'relational' ? node : other;
+      const userNode = node.identity_relevance === 'user' || node.identity_relevance === 'relational' ? node : other;
+
+      clusters.push({
+        selfNode,
+        userNode,
+        edgeWeight: edge.weight,
+        strength: edge.weight + selfNode.weight + userNode.weight,
+      });
+      clusteredIds.add(selfNode.id);
+      clusteredIds.add(userNode.id);
+    }
+  }
+
+  // Sort by combined strength — strongest relational bridges first
+  clusters.sort((a, b) => b.strength - a.strength);
+
+  // Nodes that weren't part of any relational cluster
+  const unclustered = activeNodes.filter((n) => !clusteredIds.has(n.id));
+
+  return { clusters, unclustered };
 }
 
 // ─── L1 INTERACTIONS ─────────────────────────────────────────────────
@@ -444,6 +507,7 @@ module.exports = {
   setEnrichedPortrait,
   setIdentityRelevance,
   getIdentityMultiplier,
+  getRelationalClusters,
   deleteNode,
   createEdge,
   getEdge,
