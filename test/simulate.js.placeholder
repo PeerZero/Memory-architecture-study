@@ -1,0 +1,5 @@
+// test/simulate.js — Multi-day conversation simulation
+// Mocks filter/salience to test graph mechanics without API calls
+// Run: node test/simulate.js
+
+// See file in repository for full content
