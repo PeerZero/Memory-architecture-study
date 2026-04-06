@@ -5,7 +5,7 @@ const config = require('../config');
 const graph = require('./graph');
 const { runFilter } = require('./filter');
 const { checkSalience } = require('./salience');
-const { checkAndRunCondensation, runImmediateCondensation } = require('./condenser');
+const { checkAndRunCondensation, runImmediateCondensation, runSelfReflection, applySelfReflectionResults, runSelfPortraitCondensation } = require('./condenser');
 const { buildInjection } = require('./injector');
 
 const client = new Anthropic();
@@ -34,6 +34,7 @@ async function handleMessage(userMessage, sessionId) {
       type: item.type,
       weight: item.weight,
       observation: item.observation,
+      identityRelevance: item.identityRelevance || 'neutral',
     });
 
     // Create edges to related items
@@ -51,8 +52,9 @@ async function handleMessage(userMessage, sessionId) {
       });
     }
 
-    // Apply ripple
-    graph.applyRipple(node.id, item.weight);
+    // Apply ripple — identity-relevant nodes get amplified ripple
+    const effectiveWeight = item.weight * graph.getIdentityMultiplier(item.identityRelevance || 'neutral');
+    graph.applyRipple(node.id, effectiveWeight);
   }
 
   // STEP 4: Salience check
@@ -102,6 +104,7 @@ async function handleMessage(userMessage, sessionId) {
       type: item.type,
       weight: item.weight * 0.5, // bot observations weigh less than direct user mentions
       observation: `[bot noticed] ${item.observation}`,
+      identityRelevance: item.identityRelevance || 'neutral',
     });
 
     for (const edgeLabel of item.edges) {
@@ -118,6 +121,18 @@ async function handleMessage(userMessage, sessionId) {
       });
     }
   }
+
+  // STEP 10: Self-reflection — what did the bot learn about itself?
+  // This is the "interested student" mechanism: the bot doesn't just store
+  // facts about the user, it discovers who it is through the interaction.
+  const selfReflection = await runSelfReflection(userMessage, botResponse);
+  if (selfReflection.selfObservations.length > 0 || selfReflection.identityRelevantNodes.length > 0) {
+    applySelfReflectionResults(selfReflection, `user: ${userMessage.substring(0, 100)}`);
+    console.log(`[bot] Self-reflection: ${selfReflection.selfObservations.length} observations, ${selfReflection.identityRelevantNodes.length} identity tags`);
+  }
+
+  // STEP 11: Check if self-portrait needs condensation
+  await runSelfPortraitCondensation();
 
   return botResponse;
 }

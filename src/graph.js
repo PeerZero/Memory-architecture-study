@@ -19,7 +19,7 @@ function decayRateForTier(tier) {
 
 // ─── NODE OPERATIONS ─────────────────────────────────────────────────
 
-function createNode({ label, type, weight = config.weights.passing_mention, observation = null, salienceFlagged = false }) {
+function createNode({ label, type, weight = config.weights.passing_mention, observation = null, salienceFlagged = false, identityRelevance = 'neutral' }) {
   const db = getDb();
   const now = Date.now();
   const tier = tierForWeight(weight);
@@ -27,11 +27,11 @@ function createNode({ label, type, weight = config.weights.passing_mention, obse
   const rawObservations = observation ? JSON.stringify([observation]) : '[]';
 
   db.prepare(`
-    INSERT INTO nodes (id, label, type, weight, tier, decay_rate, salience_flagged, raw_observations, created_at, last_reinforced)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, label, type, weight, tier, decayRateForTier(tier), salienceFlagged ? 1 : 0, rawObservations, now, now);
+    INSERT INTO nodes (id, label, type, weight, tier, decay_rate, salience_flagged, raw_observations, identity_relevance, created_at, last_reinforced)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, label, type, weight, tier, decayRateForTier(tier), salienceFlagged ? 1 : 0, rawObservations, identityRelevance, now, now);
 
-  return { id, label, type, weight, tier };
+  return { id, label, type, weight, tier, identityRelevance };
 }
 
 function getNode(id) {
@@ -188,13 +188,27 @@ function applyRipple(nodeId, originalWeight) {
 
   if (parentShare < 0.001) return;
 
+  const sourceNode = getNode(nodeId);
+  const sourceRelevance = sourceNode?.identity_relevance || 'neutral';
+
   const parentEdges = db.prepare(`
     SELECT * FROM edges WHERE from_node_id = ? AND type = 'explicit' ORDER BY weight DESC LIMIT 5
   `).all(nodeId);
 
   for (const edge of parentEdges) {
-    reinforceNode(edge.to_node_id, parentShare);
-    reinforceEdge(edge.id, parentShare * 0.5);
+    const targetNode = getNode(edge.to_node_id);
+    const targetRelevance = targetNode?.identity_relevance || 'neutral';
+
+    // Cross-identity bonus: ripple that crosses the identity boundary gets amplified.
+    // This is what keeps the graph from splitting into two isolated clusters.
+    // A self-node reinforcing a user-node (or vice versa) means the bot is
+    // connecting who it is to who they are — that bridge should be strong.
+    const crossesIdentity = sourceRelevance !== 'neutral' && targetRelevance !== 'neutral'
+      && sourceRelevance !== targetRelevance;
+    const bridgeBonus = crossesIdentity ? config.ripple.cross_identity_bonus : 1.0;
+
+    reinforceNode(edge.to_node_id, parentShare * bridgeBonus);
+    reinforceEdge(edge.id, parentShare * 0.5 * bridgeBonus);
 
     if (grandparentShare < 0.001) continue;
 
@@ -213,17 +227,94 @@ function applyRipple(nodeId, originalWeight) {
 
 const VALID_TYPES = new Set(['person', 'concept', 'event', 'emotion', 'pattern', 'place']);
 
-function findOrCreateNode({ label, type, weight, observation, salienceFlagged = false }) {
+function setIdentityRelevance(id, relevance) {
+  const valid = new Set(['neutral', 'self', 'user', 'relational']);
+  if (!valid.has(relevance)) return;
+  getDb().prepare('UPDATE nodes SET identity_relevance = ? WHERE id = ?').run(relevance, id);
+}
+
+function getIdentityMultiplier(identityRelevance) {
+  const { identity } = config;
+  switch (identityRelevance) {
+    case 'self': return identity.self_relevance_multiplier;
+    case 'user': return identity.user_relevance_multiplier;
+    case 'relational': return identity.relational_multiplier;
+    default: return 1.0;
+  }
+}
+
+function findOrCreateNode({ label, type, weight, observation, salienceFlagged = false, identityRelevance = 'neutral' }) {
   const existing = findNodeByLabel(label);
   if (existing) {
-    reinforceNode(existing.id, weight || config.weights.passing_mention);
+    const effectiveWeight = (weight || config.weights.passing_mention) * getIdentityMultiplier(identityRelevance);
+    reinforceNode(existing.id, effectiveWeight);
     if (observation) addObservation(existing.id, observation);
+    // Upgrade identity relevance (neutral < self/user < relational)
+    if (identityRelevance !== 'neutral' && existing.identity_relevance !== 'relational') {
+      if (identityRelevance === 'relational' ||
+          (existing.identity_relevance !== identityRelevance && existing.identity_relevance !== 'neutral')) {
+        // Two different non-neutral relevances = relational
+        setIdentityRelevance(existing.id, 'relational');
+      } else if (existing.identity_relevance === 'neutral') {
+        setIdentityRelevance(existing.id, identityRelevance);
+      }
+    }
     return { node: getNode(existing.id), created: false };
   }
   // Sanitize type — LLM may return types outside our schema
   const safeType = VALID_TYPES.has(type) ? type : 'concept';
-  const node = createNode({ label, type: safeType, weight, observation, salienceFlagged });
+  const effectiveWeight = (weight || config.weights.passing_mention) * getIdentityMultiplier(identityRelevance);
+  const node = createNode({ label, type: safeType, weight: effectiveWeight, observation, salienceFlagged, identityRelevance });
   return { node, created: true };
+}
+
+// ─── RELATIONAL RETRIEVAL ────────────────────────────────────────────
+// Instead of retrieving nodes in isolation, find clusters where
+// self and user nodes connect — these are the relational bridges
+// that make memory feel like knowing, not like reading two lists.
+
+function getRelationalClusters(activeNodes) {
+  const nodeMap = new Map(activeNodes.map((n) => [n.id, n]));
+  const clusters = [];   // { bridge: edge, selfNode, userNode, strength }
+  const clusteredIds = new Set();
+
+  // Find all edges that cross the identity boundary
+  for (const node of activeNodes) {
+    if (node.identity_relevance === 'neutral') continue;
+
+    const edges = getEdgesFrom(node.id).concat(getEdgesTo(node.id));
+    for (const edge of edges) {
+      const otherId = edge.from_node_id === node.id ? edge.to_node_id : edge.from_node_id;
+      const other = nodeMap.get(otherId);
+      if (!other) continue;
+      if (other.identity_relevance === 'neutral') continue;
+      if (other.identity_relevance === node.identity_relevance) continue;
+
+      // This edge crosses the identity boundary
+      const key = [node.id, other.id].sort().join('|');
+      if (clusters.find((c) => [c.selfNode.id, c.userNode.id].sort().join('|') === key)) continue;
+
+      const selfNode = node.identity_relevance === 'self' || node.identity_relevance === 'relational' ? node : other;
+      const userNode = node.identity_relevance === 'user' || node.identity_relevance === 'relational' ? node : other;
+
+      clusters.push({
+        selfNode,
+        userNode,
+        edgeWeight: edge.weight,
+        strength: edge.weight + selfNode.weight + userNode.weight,
+      });
+      clusteredIds.add(selfNode.id);
+      clusteredIds.add(userNode.id);
+    }
+  }
+
+  // Sort by combined strength — strongest relational bridges first
+  clusters.sort((a, b) => b.strength - a.strength);
+
+  // Nodes that weren't part of any relational cluster
+  const unclustered = activeNodes.filter((n) => !clusteredIds.has(n.id));
+
+  return { clusters, unclustered };
 }
 
 // ─── L1 INTERACTIONS ─────────────────────────────────────────────────
@@ -309,6 +400,54 @@ function updateL3Portrait(content) {
   ).run(content, now, wordCount);
 }
 
+// ─── L3 SELF PORTRAIT ─────────────────────────────────────────────────
+
+function getL3SelfPortrait() {
+  return getDb().prepare('SELECT * FROM l3_self_portrait WHERE id = 1').get();
+}
+
+function updateL3SelfPortrait(content) {
+  const now = Date.now();
+  const wordCount = content ? content.split(/\s+/).length : 0;
+  getDb().prepare(
+    'UPDATE l3_self_portrait SET content = ?, last_updated = ?, word_count = ? WHERE id = 1'
+  ).run(content, now, wordCount);
+}
+
+// ─── L2 SELF OBSERVATIONS ──────────────────────────────────────────────
+
+function storeSelfObservation(observation, sourceContext = null) {
+  const db = getDb();
+  const id = uuidv4();
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO l2_self_observations (id, observation, source_context, created_at, condensed_to_l3)
+    VALUES (?, ?, ?, ?, 0)
+  `).run(id, observation, sourceContext, now);
+  return id;
+}
+
+function getUncondensedSelfObservations() {
+  return getDb().prepare(
+    'SELECT * FROM l2_self_observations WHERE condensed_to_l3 = 0 ORDER BY created_at ASC'
+  ).all();
+}
+
+function getRecentSelfObservations(limit = 20) {
+  return getDb().prepare(
+    'SELECT * FROM l2_self_observations ORDER BY created_at DESC LIMIT ?'
+  ).all(limit);
+}
+
+function markSelfObservationsCondensed(ids) {
+  const db = getDb();
+  const stmt = db.prepare('UPDATE l2_self_observations SET condensed_to_l3 = 1 WHERE id = ?');
+  const tx = db.transaction((idList) => {
+    for (const id of idList) stmt.run(id);
+  });
+  tx(ids);
+}
+
 // ─── SHORT TERM MEMORY ────────────────────────────────────────────────
 
 function storeShortTerm(sessionId, role, content) {
@@ -366,6 +505,9 @@ module.exports = {
   reinforceNode,
   addObservation,
   setEnrichedPortrait,
+  setIdentityRelevance,
+  getIdentityMultiplier,
+  getRelationalClusters,
   deleteNode,
   createEdge,
   getEdge,
@@ -387,6 +529,12 @@ module.exports = {
   markL2CondensedToL3,
   getL3Portrait,
   updateL3Portrait,
+  getL3SelfPortrait,
+  updateL3SelfPortrait,
+  storeSelfObservation,
+  getUncondensedSelfObservations,
+  getRecentSelfObservations,
+  markSelfObservationsCondensed,
   storeShortTerm,
   getShortTerm,
   clearShortTerm,

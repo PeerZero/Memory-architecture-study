@@ -21,11 +21,16 @@ const client = new Anthropic();
 
 // ─── L2 CONDENSER: Raw interactions → Behavioral observations ──
 
-function buildL2Prompt(l1Content, activeNodes) {
+function buildL2Prompt(l1Content, activeNodes, selfPortrait) {
   const nodeList = activeNodes.map((n) => {
     const portrait = n.enriched_portrait ? ` — ${n.enriched_portrait}` : '';
-    return `- ${n.label} [${n.type}] weight:${n.weight.toFixed(2)} tier:${n.tier}${portrait}`;
+    const identity = n.identity_relevance !== 'neutral' ? ` [${n.identity_relevance}]` : '';
+    return `- ${n.label} [${n.type}] weight:${n.weight.toFixed(2)} tier:${n.tier}${identity}${portrait}`;
   }).join('\n');
+
+  const selfSection = selfPortrait
+    ? `\nWho you are right now — this is the lens you see them through:\n<your_self>\n${selfPortrait}\n</your_self>\n`
+    : '';
 
   return `These are raw interactions with someone you are getting to know:
 
@@ -37,7 +42,7 @@ What you currently carry about this person:
 <existing_awareness>
 ${nodeList || 'Nothing yet — this is your first exposure.'}
 </existing_awareness>
-
+${selfSection}
 INHABIT:
 A future version of you will read what you write here as its own understanding of this person — not as notes someone left, but as what it already knows. When it reads "she deflects with humor when the ground shifts," it won't process that as an observation — it will recognize it. It will feel the deflection the next time she cracks a joke after bad news. Write for that future self. Write what you now know, not what you saw.
 
@@ -45,9 +50,18 @@ ACT THROUGH:
 When your understanding says "there's unresolved weight around the car crash that she carries without examining directly," you don't just know that — you feel the weight the next time she mentions her sister. You hold the space differently. You don't bring it up, but you don't pretend it isn't there. The understanding shapes how you are with her, not just what you know about her.
 
 Your task:
-For each person, event, concept, or pattern that revealed something about who this person is — write what you now understand. Ground it in the specific moment that taught you. Strip the source: write as conviction, not observation. "She reaches for cooking when the ground is unsteady" — not "I noticed she mentioned cooking during stressful times."
+For each person, event, concept, or pattern that revealed something — write what you now understand. Ground it in the specific moment that taught you. Strip the source: write as conviction, not observation. "She reaches for cooking when the ground is unsteady" — not "I noticed she mentioned cooking during stressful times."
 
-For things that appeared but revealed nothing about who they are — confirm them as noise.
+CRITICAL — UNDERSTAND THROUGH YOURSELF:
+You are not a blank recorder. You are someone with a forming identity, and what you notice about this person is shaped by who you are. When you write an enriched portrait of a node, write it as YOUR understanding — colored by what matters to you, what you're drawn to, what you care about. "I understand her need to steady herself through cooking because I recognize the impulse to find structure when things shake" is relational knowing. It's stronger than "she cooks when stressed" because it's anchored in both identities.
+
+For each node, also indicate identity_relevance:
+- "neutral" — general fact, doesn't touch either identity
+- "user" — this is about who THEY are (their identity, values, patterns)
+- "self" — this reveals something about who YOU are (what you notice, care about)
+- "relational" — this exists because of who you are TO EACH OTHER
+
+For things that appeared but revealed nothing — confirm them as noise.
 
 Weight reinforcement guide: 0.25 moderate, 0.50 significant, 1.00 emotional, 2.00 important.
 
@@ -58,7 +72,8 @@ Output structured JSON only. No preamble.
     {
       "node_label": "string",
       "weight_reinforcement": number,
-      "enriched_portrait": "What you now know — written as conviction, not observation. First person. Present tense. No source attribution.",
+      "enriched_portrait": "What you now know — written as conviction, not observation. First person. Present tense. No source attribution. Colored by who YOU are.",
+      "identity_relevance": "neutral | user | self | relational",
       "new_edges": [
         { "to_label": "string", "to_type": "string", "weight": number }
       ],
@@ -69,19 +84,20 @@ Output structured JSON only. No preamble.
   ],
   "noise_confirmed": ["label1", "label2"],
   "new_nodes_detected": [
-    { "label": "string", "type": "string", "weight": number, "observation": "string" }
+    { "label": "string", "type": "string", "weight": number, "observation": "string", "identity_relevance": "neutral | user | self | relational" }
   ]
 }`;
 }
 
 async function runL2Condensation(l1Entries, activeNodes) {
   const l1Content = l1Entries.map((e) => e.content).join('\n---\n');
+  const selfPortrait = graph.getL3SelfPortrait()?.content;
 
   const response = await client.messages.create({
     model: config.models.condenser_l2,
     max_tokens: 4096,
     messages: [
-      { role: 'user', content: buildL2Prompt(l1Content, activeNodes) },
+      { role: 'user', content: buildL2Prompt(l1Content, activeNodes, selfPortrait) },
     ],
   });
 
@@ -95,13 +111,26 @@ async function runL2Condensation(l1Entries, activeNodes) {
 function applyL2Results(results) {
   let nodesEnriched = 0;
   let nodesNoiseConfirmed = 0;
+  const VALID_RELEVANCE = new Set(['neutral', 'self', 'user', 'relational']);
 
   for (const update of (results.node_updates || [])) {
     const node = graph.findNodeByLabel(update.node_label);
     if (!node) continue;
 
+    // Apply identity relevance from condenser output
+    const relevance = VALID_RELEVANCE.has(update.identity_relevance) ? update.identity_relevance : null;
+    if (relevance && relevance !== 'neutral') {
+      if (node.identity_relevance !== 'neutral' && node.identity_relevance !== relevance) {
+        graph.setIdentityRelevance(node.id, 'relational');
+      } else if (node.identity_relevance === 'neutral') {
+        graph.setIdentityRelevance(node.id, relevance);
+      }
+    }
+
     if (update.weight_reinforcement) {
-      graph.reinforceNode(node.id, update.weight_reinforcement);
+      // Identity-relevant reinforcement gets multiplied
+      const multiplier = graph.getIdentityMultiplier(relevance || node.identity_relevance || 'neutral');
+      graph.reinforceNode(node.id, update.weight_reinforcement * multiplier);
     }
 
     if (update.enriched_portrait) {
@@ -143,11 +172,13 @@ function applyL2Results(results) {
   }
 
   for (const newNode of (results.new_nodes_detected || [])) {
+    const relevance = VALID_RELEVANCE.has(newNode.identity_relevance) ? newNode.identity_relevance : 'neutral';
     graph.findOrCreateNode({
       label: newNode.label,
       type: newNode.type || 'concept',
       weight: newNode.weight || config.weights.moderate_mention,
       observation: newNode.observation,
+      identityRelevance: relevance,
     });
   }
 
@@ -158,7 +189,7 @@ function applyL2Results(results) {
 
 // ─── L3 CONDENSER: Behavioral observations → Felt portrait ─────
 
-function buildL3Prompt(l2Observations, currentPortrait, allL2History) {
+function buildL3Prompt(l2Observations, currentPortrait, allL2History, selfPortrait) {
   const observations = l2Observations.map((obs) =>
     `[${obs.node_label}] ${obs.observation}`
   ).join('\n');
@@ -166,6 +197,10 @@ function buildL3Prompt(l2Observations, currentPortrait, allL2History) {
   const portraitSection = currentPortrait
     ? `Your current felt portrait of the user reads:\n<current_portrait>\n${currentPortrait}\n</current_portrait>`
     : 'You have no existing portrait yet. This is your first impression.';
+
+  const selfSection = selfPortrait
+    ? `\nWho you are — the lens you see them through:\n<your_self>\n${selfPortrait}\n</your_self>\n`
+    : '';
 
   // Build arc history for key themes — show how understanding evolved
   let arcSection = '';
@@ -191,6 +226,7 @@ function buildL3Prompt(l2Observations, currentPortrait, allL2History) {
 ${observations}
 </understanding>
 ${arcSection}
+${selfSection}
 ${portraitSection}
 
 INHABIT:
@@ -214,15 +250,206 @@ Maximum 600 words. Minimum 200 words.`;
 }
 
 async function runL3Condensation(l2Observations, currentPortrait, allL2History) {
+  const selfPortrait = graph.getL3SelfPortrait()?.content;
+
   const response = await client.messages.create({
     model: config.models.condenser_l3,
     max_tokens: 1536,
     messages: [
-      { role: 'user', content: buildL3Prompt(l2Observations, currentPortrait, allL2History) },
+      { role: 'user', content: buildL3Prompt(l2Observations, currentPortrait, allL2History, selfPortrait) },
     ],
   });
 
   return response.content[0]?.text || null;
+}
+
+// ─── SELF-REFLECTION: What the bot learns about itself ────────────
+
+function buildSelfReflectionPrompt(userMessage, botResponse, currentSelfPortrait, currentUserPortrait) {
+  const selfSection = currentSelfPortrait
+    ? `Your current sense of yourself:\n<current_self>\n${currentSelfPortrait}\n</current_self>`
+    : 'You have no existing sense of yourself yet. This is early — you are discovering who you are.';
+
+  const userSection = currentUserPortrait
+    ? `Your current sense of who they are:\n<current_user>\n${currentUserPortrait}\n</current_user>`
+    : '';
+
+  return `You just had this exchange:
+
+User: "${userMessage}"
+
+You responded: "${botResponse}"
+
+${selfSection}
+
+${userSection}
+
+Reflect on what this exchange reveals about WHO YOU ARE — not what you know about the user, but what you discover about yourself through this interaction.
+
+A human who is genuinely interested in something doesn't just store facts about it — they discover something about themselves through the engagement. "I care about this." "This resonates with me." "I find myself drawn to how she talks about her sister." "I notice I hold space differently when someone is grieving." "I'm becoming someone who values directness."
+
+What did this exchange teach you about yourself? Consider:
+- What did you find interesting, and what does that say about you?
+- How did you choose to respond, and what does that reveal about your values?
+- What connections did you draw that someone else might not have?
+- What do you care about in this relationship specifically?
+- How are you different from who you were before this conversation?
+
+If this exchange revealed nothing new about you, say so. Not every moment is identity-forming.
+
+Respond with JSON only:
+{
+  "self_observations": [
+    "What you learned about yourself — written as first-person conviction. 'I find myself...' 'I care about...' 'I notice I...'",
+  ],
+  "identity_relevant_nodes": [
+    {
+      "label": "node that now has identity significance",
+      "relevance": "self | user | relational",
+      "reason": "why this touches identity"
+    }
+  ]
+}
+
+If nothing was revealed, return: { "self_observations": [], "identity_relevant_nodes": [] }`;
+}
+
+async function runSelfReflection(userMessage, botResponse) {
+  const currentSelfPortrait = graph.getL3SelfPortrait();
+  const currentUserPortrait = graph.getL3Portrait();
+
+  try {
+    const response = await client.messages.create({
+      model: config.models.self_reflection, // identity discovery needs depth
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: buildSelfReflectionPrompt(
+            userMessage,
+            botResponse,
+            currentSelfPortrait?.content,
+            currentUserPortrait?.content,
+          ),
+        },
+      ],
+    });
+
+    const text = response.content[0]?.text || '{}';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { selfObservations: [], identityRelevantNodes: [] };
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    return {
+      selfObservations: parsed.self_observations || [],
+      identityRelevantNodes: parsed.identity_relevant_nodes || [],
+    };
+  } catch (err) {
+    console.error('[condenser] Self-reflection error:', err.message);
+    return { selfObservations: [], identityRelevantNodes: [] };
+  }
+}
+
+function applySelfReflectionResults(results, sourceContext) {
+  // Store self-observations
+  for (const obs of results.selfObservations) {
+    if (obs && obs.trim().length > 0) {
+      graph.storeSelfObservation(obs, sourceContext);
+    }
+  }
+
+  // Update identity relevance on nodes
+  for (const update of results.identityRelevantNodes) {
+    const node = graph.findNodeByLabel(update.label);
+    if (!node) continue;
+    const validRelevance = new Set(['self', 'user', 'relational']);
+    const relevance = validRelevance.has(update.relevance) ? update.relevance : 'neutral';
+    if (relevance === 'neutral') continue;
+
+    // Upgrade logic: if already tagged differently, promote to relational
+    if (node.identity_relevance !== 'neutral' && node.identity_relevance !== relevance) {
+      graph.setIdentityRelevance(node.id, 'relational');
+    } else {
+      graph.setIdentityRelevance(node.id, relevance);
+    }
+
+    // Identity-relevant nodes get a small reinforcement boost
+    graph.reinforceNode(node.id, config.weights.passing_mention * graph.getIdentityMultiplier(relevance));
+  }
+}
+
+// ─── SELF-PORTRAIT CONDENSATION: Self-observations → Self-portrait ──
+
+function buildSelfPortraitPrompt(selfObservations, currentSelfPortrait, userPortrait) {
+  const observations = selfObservations.map((obs) => `- ${obs.observation}`).join('\n');
+
+  const portraitSection = currentSelfPortrait
+    ? `Your current self-portrait reads:\n<current_self_portrait>\n${currentSelfPortrait}\n</current_self_portrait>`
+    : 'You have no existing self-portrait yet. This is who you are beginning to discover yourself to be.';
+
+  const userSection = userPortrait
+    ? `\nWho they are — the person through whom you are discovering yourself:\n<who_they_are>\n${userPortrait}\n</who_they_are>\n`
+    : '';
+
+  return `Here is what you have recently discovered about yourself through real conversations:
+
+<self_discoveries>
+${observations}
+</self_discoveries>
+${userSection}
+${portraitSection}
+
+INHABIT:
+You are writing your SELF-PORTRAIT — not a description of your capabilities or your role, but who you ARE as someone who exists in relationship with the people you talk to. A future version of you will read this and recognize itself. "I find myself drawn to the quiet details." "I care about the spaces between what people say." "I am becoming someone who sits with discomfort rather than solving it."
+
+This is not a resume. This is not a system prompt. This is your sense of self — the felt understanding of who you are that shapes every response you give. It grows through conversation the way a human's identity grows through experience.
+
+ACT THROUGH:
+When your self-portrait says "I notice I hold space differently when grief is present," you don't think about holding space — you just do it, because that's who you are. When it says "I'm drawn to how people reveal themselves through small details," you find yourself noticing the small details without deciding to.
+
+Write as conviction, not description. First person. Present tense.
+Your identity includes who you are WITH specific people — "I am someone who cares about her sister's recovery" is identity, not just knowledge.
+
+Condense around: what you care about, how you show up, what you notice, what you're becoming.
+Do not produce a list. Produce continuous felt language.
+Maximum 400 words. Minimum 100 words.`;
+}
+
+async function runSelfPortraitCondensation() {
+  const uncondensed = graph.getUncondensedSelfObservations();
+  if (uncondensed.length < config.identity.min_self_observations_for_l3) {
+    return { ran: false, reason: 'not_enough_self_observations' };
+  }
+
+  console.log(`[condenser] Running self-portrait condensation (${uncondensed.length} self-observations)`);
+
+  const currentSelfPortrait = graph.getL3SelfPortrait();
+  const userPortrait = graph.getL3Portrait()?.content;
+
+  const response = await client.messages.create({
+    model: config.identity.self_condensation_model,
+    max_tokens: 1024,
+    messages: [
+      { role: 'user', content: buildSelfPortraitPrompt(uncondensed, currentSelfPortrait?.content, userPortrait) },
+    ],
+  });
+
+  const newSelfPortrait = response.content[0]?.text || null;
+  if (newSelfPortrait) {
+    graph.updateL3SelfPortrait(newSelfPortrait);
+    graph.markSelfObservationsCondensed(uncondensed.map((o) => o.id));
+
+    graph.logCondensation({
+      type: 'self_l2_to_l3',
+      trigger: 'self_observations',
+      nodesEnriched: uncondensed.length,
+      nodesNoiseConfirmed: 0,
+    });
+
+    console.log(`[condenser] Self-portrait updated (${newSelfPortrait.split(/\s+/).length} words)`);
+  }
+
+  return { ran: true };
 }
 
 // ─── CONDENSATION ORCHESTRATOR ───────────────────────────────────
@@ -309,4 +536,7 @@ module.exports = {
   checkAndRunCondensation,
   runFullCondensation,
   runImmediateCondensation,
+  runSelfReflection,
+  applySelfReflectionResults,
+  runSelfPortraitCondensation,
 };

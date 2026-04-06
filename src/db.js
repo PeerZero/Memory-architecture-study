@@ -50,6 +50,7 @@ function initSchema(db) {
       salience_flagged INTEGER DEFAULT 0,
       raw_observations TEXT DEFAULT '[]',
       enriched_portrait TEXT DEFAULT NULL,
+      identity_relevance TEXT DEFAULT 'neutral' CHECK(identity_relevance IN ('neutral','self','user','relational')),
       created_at INTEGER NOT NULL,
       last_reinforced INTEGER NOT NULL
     );
@@ -88,12 +89,29 @@ function initSchema(db) {
       FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
     );
 
-    -- L3 Felt Portrait (single living document)
+    -- L3 Felt Portrait (single living document — understanding of the user)
     CREATE TABLE IF NOT EXISTS l3_portrait (
       id INTEGER PRIMARY KEY DEFAULT 1,
       content TEXT,
       last_updated INTEGER,
       word_count INTEGER
+    );
+
+    -- L3 Self Portrait (single living document — the bot's understanding of itself)
+    CREATE TABLE IF NOT EXISTS l3_self_portrait (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      content TEXT,
+      last_updated INTEGER,
+      word_count INTEGER
+    );
+
+    -- L2 Self Observations (what the bot learns about itself)
+    CREATE TABLE IF NOT EXISTS l2_self_observations (
+      id TEXT PRIMARY KEY,
+      observation TEXT NOT NULL,
+      source_context TEXT DEFAULT NULL,
+      created_at INTEGER NOT NULL,
+      condensed_to_l3 INTEGER DEFAULT 0
     );
 
     -- Short Term Memory (current session)
@@ -138,10 +156,18 @@ function initSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_l1_session ON l1_interactions(session_id);
     CREATE INDEX IF NOT EXISTS idx_l2_node ON l2_observations(node_id);
     CREATE INDEX IF NOT EXISTS idx_l2_condensed ON l2_observations(condensed_to_l3);
+    CREATE INDEX IF NOT EXISTS idx_l2_self_condensed ON l2_self_observations(condensed_to_l3);
     CREATE INDEX IF NOT EXISTS idx_short_term_session ON short_term(session_id);
+
+    -- Add identity_relevance to nodes (for existing DBs, this is a no-op on new ones)
+    -- identity_relevance: how much this node relates to either identity (0=neutral, 1=self, 2=user, 3=both)
 
     -- Ensure L3 portrait row exists
     INSERT OR IGNORE INTO l3_portrait (id, content, last_updated, word_count)
+    VALUES (1, NULL, NULL, 0);
+
+    -- Ensure L3 self-portrait row exists
+    INSERT OR IGNORE INTO l3_self_portrait (id, content, last_updated, word_count)
     VALUES (1, NULL, NULL, 0);
   `);
 }
@@ -157,6 +183,8 @@ function resetDatabase() {
     DELETE FROM edges;
     DELETE FROM nodes;
     UPDATE l3_portrait SET content = NULL, last_updated = NULL, word_count = 0 WHERE id = 1;
+    DELETE FROM l2_self_observations;
+    UPDATE l3_self_portrait SET content = NULL, last_updated = NULL, word_count = 0 WHERE id = 1;
   `);
   console.log('Database reset complete.');
 }
