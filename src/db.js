@@ -1,0 +1,171 @@
+// db.js — SQLite initialization with encryption, schema creation, and helpers
+const path = require('path');
+const config = require('../config');
+
+let Database;
+try {
+  Database = require('better-sqlite3-multiple-ciphers');
+} catch {
+  Database = require('better-sqlite3');
+}
+
+const DB_PATH = path.resolve(__dirname, '..', config.db.path);
+
+let _db = null;
+
+function getDb() {
+  if (_db) return _db;
+
+  _db = new Database(DB_PATH);
+
+  // Apply encryption if configured and supported
+  if (config.db.encryption && process.env.DB_ENCRYPTION_KEY && _db.pragma) {
+    try {
+      _db.pragma(`key='${process.env.DB_ENCRYPTION_KEY}'`);
+    } catch {
+      // Encryption not supported by this build — continue unencrypted
+    }
+  }
+
+  // Performance pragmas
+  _db.pragma('journal_mode = WAL');
+  _db.pragma('synchronous = NORMAL');
+  _db.pragma('foreign_keys = ON');
+  _db.pragma('mmap_size = 268435456'); // 256MB mmap
+
+  initSchema(_db);
+  return _db;
+}
+
+function initSchema(db) {
+  db.exec(`
+    -- Nodes: people, concepts, events, emotions, patterns, places
+    CREATE TABLE IF NOT EXISTS nodes (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('person','concept','event','emotion','pattern','place')),
+      weight REAL NOT NULL DEFAULT 0.10,
+      tier TEXT NOT NULL DEFAULT 'ephemeral' CHECK(tier IN ('ephemeral','pattern','significant','permanent')),
+      decay_rate REAL NOT NULL DEFAULT 0.10,
+      salience_flagged INTEGER DEFAULT 0,
+      raw_observations TEXT DEFAULT '[]',
+      enriched_portrait TEXT DEFAULT NULL,
+      created_at INTEGER NOT NULL,
+      last_reinforced INTEGER NOT NULL
+    );
+
+    -- Edges: connections between nodes
+    CREATE TABLE IF NOT EXISTS edges (
+      id TEXT PRIMARY KEY,
+      from_node_id TEXT NOT NULL,
+      to_node_id TEXT NOT NULL,
+      weight REAL NOT NULL DEFAULT 0.10,
+      co_occurrence_count INTEGER DEFAULT 1,
+      type TEXT DEFAULT 'explicit' CHECK(type IN ('explicit','co_occurrence','ripple')),
+      created_at INTEGER NOT NULL,
+      last_reinforced INTEGER NOT NULL,
+      FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+      FOREIGN KEY (to_node_id) REFERENCES nodes(id) ON DELETE CASCADE
+    );
+
+    -- L1 Raw Interactions
+    CREATE TABLE IF NOT EXISTS l1_interactions (
+      id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      character_count INTEGER NOT NULL,
+      session_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      condensed INTEGER DEFAULT 0
+    );
+
+    -- L2 Behavioral Observations
+    CREATE TABLE IF NOT EXISTS l2_observations (
+      id TEXT PRIMARY KEY,
+      node_id TEXT NOT NULL,
+      observation TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      condensed_to_l3 INTEGER DEFAULT 0,
+      FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+    );
+
+    -- L3 Felt Portrait (single living document)
+    CREATE TABLE IF NOT EXISTS l3_portrait (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      content TEXT,
+      last_updated INTEGER,
+      word_count INTEGER
+    );
+
+    -- Short Term Memory (current session)
+    CREATE TABLE IF NOT EXISTS short_term (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user','bot')),
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    -- Condensation Log
+    CREATE TABLE IF NOT EXISTS condensation_log (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      nodes_enriched INTEGER DEFAULT 0,
+      nodes_noise_confirmed INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+
+    -- Sleep Log
+    CREATE TABLE IF NOT EXISTS sleep_log (
+      id TEXT PRIMARY KEY,
+      nodes_decayed INTEGER DEFAULT 0,
+      nodes_deleted INTEGER DEFAULT 0,
+      nodes_promoted INTEGER DEFAULT 0,
+      edges_created INTEGER DEFAULT 0,
+      edges_deleted INTEGER DEFAULT 0,
+      ran_at INTEGER NOT NULL
+    );
+
+    -- Indexes for fast graph traversal
+    CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_node_id);
+    CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_node_id);
+    CREATE INDEX IF NOT EXISTS idx_edges_weight ON edges(weight);
+    CREATE INDEX IF NOT EXISTS idx_nodes_weight ON nodes(weight);
+    CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
+    CREATE INDEX IF NOT EXISTS idx_nodes_tier ON nodes(tier);
+    CREATE INDEX IF NOT EXISTS idx_nodes_label ON nodes(label);
+    CREATE INDEX IF NOT EXISTS idx_l1_condensed ON l1_interactions(condensed);
+    CREATE INDEX IF NOT EXISTS idx_l1_session ON l1_interactions(session_id);
+    CREATE INDEX IF NOT EXISTS idx_l2_node ON l2_observations(node_id);
+    CREATE INDEX IF NOT EXISTS idx_l2_condensed ON l2_observations(condensed_to_l3);
+    CREATE INDEX IF NOT EXISTS idx_short_term_session ON short_term(session_id);
+
+    -- Ensure L3 portrait row exists
+    INSERT OR IGNORE INTO l3_portrait (id, content, last_updated, word_count)
+    VALUES (1, NULL, NULL, 0);
+  `);
+}
+
+function resetDatabase() {
+  const db = getDb();
+  db.exec(`
+    DELETE FROM short_term;
+    DELETE FROM condensation_log;
+    DELETE FROM sleep_log;
+    DELETE FROM l2_observations;
+    DELETE FROM l1_interactions;
+    DELETE FROM edges;
+    DELETE FROM nodes;
+    UPDATE l3_portrait SET content = NULL, last_updated = NULL, word_count = 0 WHERE id = 1;
+  `);
+  console.log('Database reset complete.');
+}
+
+function close() {
+  if (_db) {
+    _db.close();
+    _db = null;
+  }
+}
+
+module.exports = { getDb, resetDatabase, close };
