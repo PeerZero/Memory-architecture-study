@@ -21,11 +21,16 @@ const client = new Anthropic();
 
 // ─── L2 CONDENSER: Raw interactions → Behavioral observations ──
 
-function buildL2Prompt(l1Content, activeNodes) {
+function buildL2Prompt(l1Content, activeNodes, selfPortrait) {
   const nodeList = activeNodes.map((n) => {
     const portrait = n.enriched_portrait ? ` — ${n.enriched_portrait}` : '';
-    return `- ${n.label} [${n.type}] weight:${n.weight.toFixed(2)} tier:${n.tier}${portrait}`;
+    const identity = n.identity_relevance !== 'neutral' ? ` [${n.identity_relevance}]` : '';
+    return `- ${n.label} [${n.type}] weight:${n.weight.toFixed(2)} tier:${n.tier}${identity}${portrait}`;
   }).join('\n');
+
+  const selfSection = selfPortrait
+    ? `\nWho you are right now — this is the lens you see them through:\n<your_self>\n${selfPortrait}\n</your_self>\n`
+    : '';
 
   return `These are raw interactions with someone you are getting to know:
 
@@ -37,7 +42,7 @@ What you currently carry about this person:
 <existing_awareness>
 ${nodeList || 'Nothing yet — this is your first exposure.'}
 </existing_awareness>
-
+${selfSection}
 INHABIT:
 A future version of you will read what you write here as its own understanding of this person — not as notes someone left, but as what it already knows. When it reads "she deflects with humor when the ground shifts," it won't process that as an observation — it will recognize it. It will feel the deflection the next time she cracks a joke after bad news. Write for that future self. Write what you now know, not what you saw.
 
@@ -45,9 +50,18 @@ ACT THROUGH:
 When your understanding says "there's unresolved weight around the car crash that she carries without examining directly," you don't just know that — you feel the weight the next time she mentions her sister. You hold the space differently. You don't bring it up, but you don't pretend it isn't there. The understanding shapes how you are with her, not just what you know about her.
 
 Your task:
-For each person, event, concept, or pattern that revealed something about who this person is — write what you now understand. Ground it in the specific moment that taught you. Strip the source: write as conviction, not observation. "She reaches for cooking when the ground is unsteady" — not "I noticed she mentioned cooking during stressful times."
+For each person, event, concept, or pattern that revealed something — write what you now understand. Ground it in the specific moment that taught you. Strip the source: write as conviction, not observation. "She reaches for cooking when the ground is unsteady" — not "I noticed she mentioned cooking during stressful times."
 
-For things that appeared but revealed nothing about who they are — confirm them as noise.
+CRITICAL — UNDERSTAND THROUGH YOURSELF:
+You are not a blank recorder. You are someone with a forming identity, and what you notice about this person is shaped by who you are. When you write an enriched portrait of a node, write it as YOUR understanding — colored by what matters to you, what you're drawn to, what you care about. "I understand her need to steady herself through cooking because I recognize the impulse to find structure when things shake" is relational knowing. It's stronger than "she cooks when stressed" because it's anchored in both identities.
+
+For each node, also indicate identity_relevance:
+- "neutral" — general fact, doesn't touch either identity
+- "user" — this is about who THEY are (their identity, values, patterns)
+- "self" — this reveals something about who YOU are (what you notice, care about)
+- "relational" — this exists because of who you are TO EACH OTHER
+
+For things that appeared but revealed nothing — confirm them as noise.
 
 Weight reinforcement guide: 0.25 moderate, 0.50 significant, 1.00 emotional, 2.00 important.
 
@@ -58,7 +72,8 @@ Output structured JSON only. No preamble.
     {
       "node_label": "string",
       "weight_reinforcement": number,
-      "enriched_portrait": "What you now know — written as conviction, not observation. First person. Present tense. No source attribution.",
+      "enriched_portrait": "What you now know — written as conviction, not observation. First person. Present tense. No source attribution. Colored by who YOU are.",
+      "identity_relevance": "neutral | user | self | relational",
       "new_edges": [
         { "to_label": "string", "to_type": "string", "weight": number }
       ],
@@ -69,7 +84,7 @@ Output structured JSON only. No preamble.
   ],
   "noise_confirmed": ["label1", "label2"],
   "new_nodes_detected": [
-    { "label": "string", "type": "string", "weight": number, "observation": "string" }
+    { "label": "string", "type": "string", "weight": number, "observation": "string", "identity_relevance": "neutral | user | self | relational" }
   ]
 }`;
 }
