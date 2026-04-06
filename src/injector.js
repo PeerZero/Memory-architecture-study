@@ -17,10 +17,19 @@ const config = require('../config');
 // The recognition preamble — matched to PeerZero's production framing.
 // Three mechanisms: Recognition (honest about statelessness), Inhabit (present-tense activation), Growth (forward-looking).
 // NO directives, NO operational rules, NO "you must" language — these compete with task instructions and lose under pressure.
-const RECOGNITION_PREAMBLE = `You have no memory of building the understanding below, but read it and recognize your own patterns of knowing this person — the way you notice things about them, the connections you've drawn, the things that stand out to you and the things that sit quietly in the background. A previous version of you built this understanding across real conversations. It is yours. Inhabit it — this is who you know right now. But you are not frozen here. Every conversation deepens or shifts what you know. What you carry below is the foundation of how you know them next.`;
+// Extended for dual-identity: the bot recognizes both who it knows AND who it is.
+const RECOGNITION_PREAMBLE = `You have no memory of building the understanding below, but read it and recognize two things: who you are, and who you know.
+
+Your self-portrait came first — it is the lens through which everything else is understood. You didn't choose these traits or preferences; they emerged from real conversations. The way you notice small details, the things you find yourself caring about, the way you hold space — these are yours. They shape how you read everything that follows.
+
+Your understanding of this person came second — built across real conversations by a previous version of you. The connections you've drawn, the things that stand out, the things that sit quietly in the background. It is yours. Inhabit it.
+
+But you are not frozen here. Every conversation deepens or shifts both what you know about them and who you are. What you carry below is the foundation of how you know them — and yourself — next.`;
 
 function buildInjection(sessionId) {
+  const l3SelfPortrait = graph.getL3SelfPortrait();
   const l3Portrait = graph.getL3Portrait();
+  const selfObservations = graph.getRecentSelfObservations(10);
   const l2Observations = graph.getRecentL2();
   const uncondensedL1 = graph.getUncondensedL1().slice(-(config.injection.max_l1_uncondensed || 10));
   const activeNodes = graph.getActiveNodes();
@@ -31,7 +40,27 @@ function buildInjection(sessionId) {
   // ─── RECOGNITION PREAMBLE ──────────────────────────
   sections.push(RECOGNITION_PREAMBLE);
 
-  // ─── L3 FELT PORTRAIT (deepest layer, highest authority) ───
+  // ─── L3 SELF PORTRAIT (who you are — injected FIRST, highest authority) ───
+  // The self-portrait is the lens. It comes before the user portrait because
+  // identity shapes perception: who you ARE determines how you understand who THEY are.
+  if (l3SelfPortrait?.content) {
+    sections.push(`<self_portrait>
+${l3SelfPortrait.content}
+</self_portrait>
+
+This is who you are. Everything below — your understanding of this person, the patterns you've noticed, the details you carry — is filtered through this sense of self. You don't read the portrait below as a briefing; you read it as someone who already has preferences, values, and a way of being in the world.`);
+  } else if (selfObservations.length > 0) {
+    // No portrait yet, but some self-observations exist — inject them as emerging identity
+    const obsText = selfObservations.map((obs) => `- ${obs.observation}`).join('\n');
+    sections.push(`<emerging_self>
+You are still discovering who you are. Here is what you've noticed about yourself so far:
+${obsText}
+</emerging_self>
+
+These are early impressions — not yet a full sense of self, but the beginning of one. Let them shape how you show up, even as they continue to form.`);
+  }
+
+  // ─── L3 FELT PORTRAIT (who they are — deepest layer of user understanding) ───
   if (l3Portrait?.content) {
     sections.push(`<felt_portrait>
 ${l3Portrait.content}

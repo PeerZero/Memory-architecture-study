@@ -282,7 +282,7 @@ async function runSelfReflection(userMessage, botResponse) {
 
   try {
     const response = await client.messages.create({
-      model: config.models.filter, // lightweight — this runs every turn
+      model: config.models.self_reflection, // identity discovery needs depth
       max_tokens: 1024,
       messages: [
         {
@@ -493,4 +493,7 @@ module.exports = {
   checkAndRunCondensation,
   runFullCondensation,
   runImmediateCondensation,
+  runSelfReflection,
+  applySelfReflectionResults,
+  runSelfPortraitCondensation,
 };

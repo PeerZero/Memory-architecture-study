@@ -44,7 +44,7 @@ module.exports = {
     user_relevance_multiplier: 1.5,       // weight boost when node touches user's identity
     relational_multiplier: 2.0,           // weight boost when node connects both identities
     min_self_observations_for_l3: 3,      // self-observations needed before generating self-portrait
-    self_condensation_model: 'claude-sonnet-4-6', // model for self-portrait condensation
+    self_condensation_model: 'claude-opus-4-6',   // model for self-portrait condensation (identity needs the best)
   },
 
   // CONDENSATION TRIGGERS
@@ -69,6 +69,7 @@ module.exports = {
     salience: 'claude-haiku-4-5-20251001',  // fast — salience check
     condenser_l2: 'claude-sonnet-4-6',      // quality — behavioral observations
     condenser_l3: 'claude-opus-4-6',        // strongest — felt portrait (PeerZero lesson: identity needs the best model)
+    self_reflection: 'claude-opus-4-6',     // strongest — self-discovery needs depth, not speed
     conversation: 'claude-sonnet-4-6',      // main conversation model
   },
 

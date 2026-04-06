@@ -52,6 +52,7 @@ console.log('\u2500'.repeat(50));
 console.log('Commands:');
 console.log('  /graph     \u2014 Show active graph nodes');
 console.log('  /portrait  \u2014 Show current L3 felt portrait');
+console.log('  /self      \u2014 Show current L3 self portrait');
 console.log('  /stats     \u2014 Show system stats');
 console.log('  /sleep     \u2014 Run sleep consolidation manually');
 console.log('  /condense  \u2014 Force condensation cycle');
@@ -114,18 +115,48 @@ async function handleCommand(cmd) {
       break;
     }
 
+    case '/self': {
+      const selfPortrait = graph.getL3SelfPortrait();
+      if (!selfPortrait?.content) {
+        const selfObs = graph.getRecentSelfObservations(10);
+        if (selfObs.length === 0) {
+          console.log('\n[self] No self-portrait yet. The bot hasn\'t discovered who it is yet.\n');
+        } else {
+          console.log(`\n[self] No self-portrait yet, but ${selfObs.length} self-observations forming:`);
+          for (const obs of selfObs) {
+            console.log(`  - ${obs.observation}`);
+          }
+          console.log('');
+        }
+      } else {
+        console.log(`\n[self] Self Portrait (${selfPortrait.word_count} words, updated ${new Date(selfPortrait.last_updated).toLocaleString()}):\n`);
+        console.log(selfPortrait.content);
+        console.log('');
+      }
+      break;
+    }
+
     case '/stats': {
       const nodes = graph.getAllNodes();
       const portrait = graph.getL3Portrait();
+      const selfPortrait = graph.getL3SelfPortrait();
+      const selfObs = graph.getRecentSelfObservations(1000);
       const l1Count = graph.getUncondensedL1CharCount();
       const l2 = graph.getRecentL2(1000);
+
+      // Count identity relevance distribution
+      const idCounts = { neutral: 0, self: 0, user: 0, relational: 0 };
+      for (const n of nodes) idCounts[n.identity_relevance || 'neutral']++;
 
       console.log('\n[stats] System Statistics:');
       console.log(`  Nodes: ${nodes.length}`);
       console.log(`  Tiers: ${countTiers(nodes)}`);
+      console.log(`  Identity: neutral:${idCounts.neutral} self:${idCounts.self} user:${idCounts.user} relational:${idCounts.relational}`);
       console.log(`  L1 uncondensed: ${l1Count} chars`);
       console.log(`  L2 observations: ${l2.length}`);
-      console.log(`  L3 portrait: ${portrait?.content ? `${portrait.word_count} words` : 'not yet generated'}`);
+      console.log(`  L3 user portrait: ${portrait?.content ? `${portrait.word_count} words` : 'not yet generated'}`);
+      console.log(`  Self observations: ${selfObs.length}`);
+      console.log(`  L3 self portrait: ${selfPortrait?.content ? `${selfPortrait.word_count} words` : 'not yet generated'}`);
       console.log('');
       break;
     }
