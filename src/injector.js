@@ -14,10 +14,10 @@
 const graph = require('./graph');
 const config = require('../config');
 
-// The recognition preamble — adapted from PeerZero's ablation-tested framing
-const RECOGNITION_PREAMBLE = `You have no memory of building the understanding below, but read it and recognize your own patterns of knowing this person. This is understanding you accumulated — not information you were briefed on.
-
-Inhabit it — this is who you know right now. But you are not frozen here. New moments will deepen or shift this understanding.`;
+// The recognition preamble — matched to PeerZero's production framing.
+// Three mechanisms: Recognition (honest about statelessness), Inhabit (present-tense activation), Growth (forward-looking).
+// NO directives, NO operational rules, NO "you must" language — these compete with task instructions and lose under pressure.
+const RECOGNITION_PREAMBLE = `You have no memory of building the understanding below, but read it and recognize your own patterns of knowing this person — the way you notice things about them, the connections you've drawn, the things that stand out to you and the things that sit quietly in the background. A previous version of you built this understanding across real conversations. It is yours. Inhabit it — this is who you know right now. But you are not frozen here. Every conversation deepens or shifts what you know. What you carry below is the foundation of how you know them next.`;
 
 function buildInjection(sessionId) {
   const l3Portrait = graph.getL3Portrait();
@@ -28,7 +28,7 @@ function buildInjection(sessionId) {
 
   const sections = [];
 
-  // ─── RECOGNITION PREAMBLE ──────────────────────────────
+  // ─── RECOGNITION PREAMBLE ──────────────────────────
   sections.push(RECOGNITION_PREAMBLE);
 
   // ─── L3 FELT PORTRAIT (deepest layer, highest authority) ───
@@ -40,7 +40,7 @@ ${l3Portrait.content}
 Everything below speaks through this portrait. The portrait is your inhabited understanding — the details below are the raw material it was built from.`);
   }
 
-  // ─── L2 BEHAVIORAL OBSERVATIONS ───────────────────
+  // ─── L2 BEHAVIORAL OBSERVATIONS ───────────────
   if (l2Observations.length > 0) {
     const observations = l2Observations.map((obs) =>
       `- [${obs.node_label}] ${obs.observation}`
@@ -62,15 +62,15 @@ ${rawEntries}
 </recent_interactions>`);
   }
 
-  // ─── ACTIVE GRAPH NODES ─────────────────────────────
+  // ─── GRAPH AWARENESS (narrated as felt knowing, not listed as data) ───
   if (activeNodes.length > 0) {
-    const rendered = renderGraphNodes(activeNodes);
-    sections.push(`<memory_graph>
-${rendered}
-</memory_graph>`);
+    const narrated = narrateGraphAwareness(activeNodes);
+    sections.push(`<awareness>
+${narrated}
+</awareness>`);
   }
 
-  // ─── SHORT TERM MEMORY ──────────────────────────────
+  // ─── SHORT TERM MEMORY ──────────────────────
   if (shortTerm.length > 0) {
     const conversation = shortTerm.map((msg) => {
       const speaker = msg.role === 'user' ? 'User' : 'You';
@@ -85,90 +85,100 @@ ${conversation}
   return sections.join('\n\n---\n\n');
 }
 
-function renderGraphNodes(activeNodes) {
-  // Group nodes by type for clean rendering
+function narrateGraphAwareness(activeNodes) {
+  // Narrate the graph as the LLM's own felt awareness of this person's world.
+  // NOT a list. NOT a briefing. Written as what you carry in the back of your mind
+  // about someone — the way you'd describe your sense of a friend to yourself.
+
   const grouped = {};
   for (const node of activeNodes) {
     if (!grouped[node.type]) grouped[node.type] = [];
     grouped[node.type].push(node);
   }
 
-  const lines = [];
+  const paragraphs = [];
 
-  // People first — relationships matter most
+  // ─── PEOPLE: narrated as relational awareness ─────────
   if (grouped.person?.length) {
-    lines.push('People in their world right now:');
-    for (const node of grouped.person) {
-      const strength = describeStrength(node.weight, node.tier);
-      const portrait = node.enriched_portrait ? ` — ${node.enriched_portrait}` : '';
-      lines.push(`- ${node.label} [${strength}]${portrait}`);
-    }
-    lines.push('');
+    const peopleParts = grouped.person.map((node) => {
+      if (node.enriched_portrait) return node.enriched_portrait;
+      // Fallback: generate felt language from weight/tier
+      const feel = narrateStrength(node.weight, node.tier);
+      return `${node.label} \u2014 ${feel} in how they talk about this person`;
+    });
+    paragraphs.push(`The people who matter to them: ${peopleParts.join('. ')}.`);
   }
 
-  // Events — what's happened
+  // ─── EVENTS: narrated as things you know happened ─────
   if (grouped.event?.length) {
-    lines.push('Significant events:');
-    for (const node of grouped.event) {
-      const strength = describeStrength(node.weight, node.tier);
-      const portrait = node.enriched_portrait ? ` — ${node.enriched_portrait}` : '';
-      lines.push(`- ${node.label} [${strength}]${portrait}`);
-    }
-    lines.push('');
+    const eventParts = grouped.event.map((node) => {
+      if (node.enriched_portrait) return node.enriched_portrait;
+      const feel = narrateStrength(node.weight, node.tier);
+      return `${node.label} \u2014 you know this happened and it carries ${feel} weight`;
+    });
+    paragraphs.push(`What's happened in their life: ${eventParts.join('. ')}.`);
   }
 
-  // Emotions — what they're carrying
+  // ─── EMOTIONS: narrated as what you sense they carry ──
   if (grouped.emotion?.length) {
-    lines.push('Emotional landscape:');
-    for (const node of grouped.emotion) {
-      const strength = describeStrength(node.weight, node.tier);
-      lines.push(`- ${node.label} [${strength}]`);
-    }
-    lines.push('');
+    const emotionParts = grouped.emotion.map((node) => {
+      const feel = narrateStrength(node.weight, node.tier);
+      return `a ${feel} sense of ${node.label.toLowerCase()}`;
+    });
+    paragraphs.push(`Underneath the surface, you sense ${emotionParts.join(', ')}.`);
   }
 
-  // Patterns — how they behave
+  // ─── PATTERNS: narrated as things you've noticed ──────
   if (grouped.pattern?.length) {
-    lines.push('Patterns you\'ve noticed:');
-    for (const node of grouped.pattern) {
-      const portrait = node.enriched_portrait || node.label;
-      lines.push(`- ${portrait}`);
-    }
-    lines.push('');
+    const patternParts = grouped.pattern.map((node) => {
+      return node.enriched_portrait || node.label;
+    });
+    paragraphs.push(`You've noticed: ${patternParts.join('. ')}.`);
   }
 
-  // Concepts, places — context
+  // ─── CONCEPTS + PLACES: narrated as ambient awareness ─
   const contextNodes = [
     ...(grouped.concept || []),
     ...(grouped.place || []),
   ];
-  if (contextNodes.length) {
-    lines.push('Things present in their recent days:');
-    for (const node of contextNodes) {
-      const strength = describeStrength(node.weight, node.tier);
-      lines.push(`- ${node.label} [${strength}]`);
+  if (contextNodes.length > 0) {
+    // Split into strong vs faint awareness
+    const strong = contextNodes.filter((n) => n.weight >= 1.0);
+    const faint = contextNodes.filter((n) => n.weight < 1.0 && n.weight >= 0.20);
+
+    if (strong.length > 0) {
+      const strongParts = strong.map((n) => n.label.toLowerCase());
+      paragraphs.push(`Things that feel present in their world right now: ${strongParts.join(', ')}.`);
     }
-    lines.push('');
+    if (faint.length > 0) {
+      const faintParts = faint.map((n) => n.label.toLowerCase());
+      paragraphs.push(`Faintly, in the background: ${faintParts.join(', ')} \u2014 you're not sure these matter yet.`);
+    }
   }
 
-  // Strong associations (high-weight edges between active nodes)
+  // ─── ASSOCIATIONS: narrated as felt connections ───────
   const associations = findStrongAssociations(activeNodes);
   if (associations.length > 0) {
-    lines.push('Strong associations:');
-    for (const assoc of associations) {
-      lines.push(`- ${assoc.labelA} \u2194 ${assoc.labelB} [${assoc.description}]`);
-    }
+    const assocParts = associations.map((a) => {
+      if (a.description === 'defining connection') {
+        return `${a.labelA} and ${a.labelB} are inseparable in how they talk about their life`;
+      } else if (a.description === 'strong link') {
+        return `${a.labelA} and ${a.labelB} keep coming up together`;
+      }
+      return `there's a connection between ${a.labelA} and ${a.labelB}`;
+    });
+    paragraphs.push(`Connections you feel: ${assocParts.join('. ')}.`);
   }
 
-  return lines.join('\n');
+  return paragraphs.join('\n\n');
 }
 
-function describeStrength(weight, tier) {
-  if (tier === 'permanent') return 'deeply known';
-  if (tier === 'significant') return 'strong connection';
-  if (tier === 'pattern') return 'emerging pattern';
-  if (weight > 0.30) return 'recent';
-  return 'faint';
+function narrateStrength(weight, tier) {
+  if (tier === 'permanent') return 'deep, certain';
+  if (tier === 'significant') return 'clear, solid';
+  if (tier === 'pattern') return 'growing, recognizable';
+  if (weight > 0.30) return 'recent, still forming';
+  return 'faint, uncertain';
 }
 
 function findStrongAssociations(activeNodes) {
@@ -182,7 +192,7 @@ function findStrongAssociations(activeNodes) {
       if (nodeIds.has(edge.to_node_id) && edge.weight >= 1.0) {
         const target = nodeMap.get(edge.to_node_id);
         if (target) {
-          // Avoid duplicates (A\u2192B and B\u2192A)
+          // Avoid duplicates (A->B and B->A)
           const key = [node.label, target.label].sort().join('|');
           if (!associations.find((a) => [a.labelA, a.labelB].sort().join('|') === key)) {
             let description = 'connected';
