@@ -3,7 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { getDb } = require('./db');
 const config = require('../config');
 
-// ─── TIER HELPERS ──────────────────────────────────────────────────────
+// ─── TIER HELPERS ───────────────────────────────────────────────────────────
 
 function tierForWeight(weight) {
   const { tiers } = config;
@@ -17,7 +17,7 @@ function decayRateForTier(tier) {
   return config.tiers[tier]?.decay ?? config.tiers.ephemeral.decay;
 }
 
-// ─── NODE OPERATIONS ─────────────────────────────────────────────────
+// ─── NODE OPERATIONS ─────────────────────────────────────────────────────
 
 function createNode({ label, type, weight = config.weights.passing_mention, observation = null, salienceFlagged = false }) {
   const db = getDb();
@@ -67,7 +67,6 @@ function reinforceNode(id, weightAdd) {
     WHERE id = ?
   `).run(weightAdd, now, id);
 
-  // Recalculate tier after reinforcement
   const node = getNode(id);
   if (!node) return null;
 
@@ -101,20 +100,18 @@ function setEnrichedPortrait(id, portrait) {
 
 function deleteNode(id) {
   const db = getDb();
-  // Edges cascade-delete via FK, but explicit cleanup for safety
   db.prepare('DELETE FROM edges WHERE from_node_id = ? OR to_node_id = ?').run(id, id);
   db.prepare('DELETE FROM l2_observations WHERE node_id = ?').run(id);
   db.prepare('DELETE FROM nodes WHERE id = ?').run(id);
 }
 
-// ─── EDGE OPERATIONS ─────────────────────────────────────────────────
+// ─── EDGE OPERATIONS ─────────────────────────────────────────────────────
 
 function createEdge({ fromNodeId, toNodeId, weight = 0.10, type = 'explicit' }) {
   const db = getDb();
   const now = Date.now();
   const id = uuidv4();
 
-  // Check if edge already exists between these nodes (either direction)
   const existing = db.prepare(`
     SELECT * FROM edges
     WHERE (from_node_id = ? AND to_node_id = ?) OR (from_node_id = ? AND to_node_id = ?)
@@ -181,29 +178,25 @@ function deleteEdge(id) {
   getDb().prepare('DELETE FROM edges WHERE id = ?').run(id);
 }
 
-// ─── RIPPLE ────────────────────────────────────────────────────────
+// ─── RIPPLE ──────────────────────────────────────────────────────────────
 
 function applyRipple(nodeId, originalWeight) {
   const db = getDb();
   const parentShare = originalWeight * config.ripple.parent_percentage;
   const grandparentShare = originalWeight * config.ripple.grandparent_percentage;
 
-  if (parentShare < 0.001) return; // not worth rippling
+  if (parentShare < 0.001) return;
 
-  // Find parent nodes (nodes this node has edges TO, i.e., this node was mentioned in context of parent)
   const parentEdges = db.prepare(`
     SELECT * FROM edges WHERE from_node_id = ? AND type = 'explicit' ORDER BY weight DESC LIMIT 5
   `).all(nodeId);
 
   for (const edge of parentEdges) {
-    // Reinforce the parent node
     reinforceNode(edge.to_node_id, parentShare);
-    // Reinforce the connecting edge
     reinforceEdge(edge.id, parentShare * 0.5);
 
     if (grandparentShare < 0.001) continue;
 
-    // Find grandparent edges from the parent
     const gpEdges = db.prepare(`
       SELECT * FROM edges WHERE from_node_id = ? AND type = 'explicit' ORDER BY weight DESC LIMIT 3
     `).all(edge.to_node_id);
@@ -215,7 +208,9 @@ function applyRipple(nodeId, originalWeight) {
   }
 }
 
-// ─── FIND OR CREATE ──────────────────────────────────────────────────
+// ─── FIND OR CREATE ──────────────────────────────────────────────────────
+
+const VALID_TYPES = new Set(['person', 'concept', 'event', 'emotion', 'pattern', 'place']);
 
 function findOrCreateNode({ label, type, weight, observation, salienceFlagged = false }) {
   const existing = findNodeByLabel(label);
@@ -224,11 +219,12 @@ function findOrCreateNode({ label, type, weight, observation, salienceFlagged = 
     if (observation) addObservation(existing.id, observation);
     return { node: getNode(existing.id), created: false };
   }
-  const node = createNode({ label, type, weight, observation, salienceFlagged });
+  const safeType = VALID_TYPES.has(type) ? type : 'concept';
+  const node = createNode({ label, type: safeType, weight, observation, salienceFlagged });
   return { node, created: true };
 }
 
-// ─── L1 INTERACTIONS ─────────────────────────────────────────────────
+// ─── L1 INTERACTIONS ─────────────────────────────────────────────────────
 
 function storeL1(content, sessionId) {
   const db = getDb();
@@ -263,7 +259,7 @@ function markL1Condensed(ids) {
   tx(ids);
 }
 
-// ─── L2 OBSERVATIONS ────────────────────────────────────────────────
+// ─── L2 OBSERVATIONS ────────────────────────────────────────────────────
 
 function storeL2(nodeId, observation) {
   const db = getDb();
@@ -297,7 +293,7 @@ function markL2CondensedToL3(ids) {
   tx(ids);
 }
 
-// ─── L3 PORTRAIT ─────────────────────────────────────────────────────
+// ─── L3 PORTRAIT ─────────────────────────────────────────────────────────
 
 function getL3Portrait() {
   return getDb().prepare('SELECT * FROM l3_portrait WHERE id = 1').get();
@@ -311,7 +307,7 @@ function updateL3Portrait(content) {
   ).run(content, now, wordCount);
 }
 
-// ─── SHORT TERM MEMORY ────────────────────────────────────────────────
+// ─── SHORT TERM MEMORY ────────────────────────────────────────────────────
 
 function storeShortTerm(sessionId, role, content) {
   const db = getDb();
@@ -334,7 +330,7 @@ function clearShortTerm(sessionId) {
   getDb().prepare('DELETE FROM short_term WHERE session_id = ?').run(sessionId);
 }
 
-// ─── LOGGING ───────────────────────────────────────────────────────
+// ─── LOGGING ─────────────────────────────────────────────────────────────
 
 function logCondensation({ type, trigger, nodesEnriched = 0, nodesNoiseConfirmed = 0 }) {
   const db = getDb();
@@ -357,51 +353,14 @@ function logSleep({ nodesDecayed = 0, nodesDeleted = 0, nodesPromoted = 0, edges
 }
 
 module.exports = {
-  // Tier helpers
-  tierForWeight,
-  decayRateForTier,
-  // Nodes
-  createNode,
-  getNode,
-  findNodeByLabel,
-  findNodesByType,
-  getActiveNodes,
-  getAllNodes,
-  reinforceNode,
-  addObservation,
-  setEnrichedPortrait,
-  deleteNode,
-  // Edges
-  createEdge,
-  getEdge,
-  getEdgesFrom,
-  getEdgesTo,
-  getEdgesBetween,
-  getNeighbors,
-  reinforceEdge,
-  deleteEdge,
-  // Ripple
-  applyRipple,
-  // Find or create
-  findOrCreateNode,
-  // L1
-  storeL1,
-  getUncondensedL1,
-  getUncondensedL1CharCount,
-  markL1Condensed,
-  // L2
-  storeL2,
-  getRecentL2,
-  getUncondensedL2,
-  markL2CondensedToL3,
-  // L3
-  getL3Portrait,
-  updateL3Portrait,
-  // Short term
-  storeShortTerm,
-  getShortTerm,
-  clearShortTerm,
-  // Logging
-  logCondensation,
-  logSleep,
+  tierForWeight, decayRateForTier,
+  createNode, getNode, findNodeByLabel, findNodesByType, getActiveNodes, getAllNodes,
+  reinforceNode, addObservation, setEnrichedPortrait, deleteNode,
+  createEdge, getEdge, getEdgesFrom, getEdgesTo, getEdgesBetween, getNeighbors, reinforceEdge, deleteEdge,
+  applyRipple, findOrCreateNode,
+  storeL1, getUncondensedL1, getUncondensedL1CharCount, markL1Condensed,
+  storeL2, getRecentL2, getUncondensedL2, markL2CondensedToL3,
+  getL3Portrait, updateL3Portrait,
+  storeShortTerm, getShortTerm, clearShortTerm,
+  logCondensation, logSleep,
 };
