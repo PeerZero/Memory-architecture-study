@@ -2,8 +2,9 @@
 // Injection order (deepest to shallowest):
 //   1. L3 Felt Portrait — who they are, inhabited first-person
 //   2. L2 Behavioral Patterns — observed patterns not yet in portrait
-//   3. Active Graph Nodes — raw current state, rendered as present-tense awareness
-//   4. Short Term Memory — current conversation history
+//   3. Uncondensed L1 — raw recent interactions not yet processed
+//   4. Active Graph Nodes — raw current state, rendered as present-tense awareness
+//   5. Short Term Memory — current conversation history
 //
 // Key lesson from PeerZero:
 // - Recognition preamble: honest about statelessness, then inhabit
@@ -21,6 +22,7 @@ Inhabit it — this is who you know right now. But you are not frozen here. New 
 function buildInjection(sessionId) {
   const l3Portrait = graph.getL3Portrait();
   const l2Observations = graph.getRecentL2();
+  const uncondensedL1 = graph.getUncondensedL1().slice(-(config.injection.max_l1_uncondensed || 10));
   const activeNodes = graph.getActiveNodes();
   const shortTerm = graph.getShortTerm(sessionId);
 
@@ -48,6 +50,16 @@ Everything below speaks through this portrait. The portrait is your inhabited un
 Recent patterns you've noticed:
 ${observations}
 </behavioral_observations>`);
+  }
+
+  // ─── UNCONDENSED L1 (raw recent interactions not yet processed) ──
+  if (uncondensedL1.length > 0) {
+    const rawEntries = uncondensedL1.map((entry) => entry.content).join('\n---\n');
+
+    sections.push(`<recent_interactions>
+Raw interactions not yet absorbed into your understanding — these are recent and may contain details the portrait and observations haven't caught yet:
+${rawEntries}
+</recent_interactions>`);
   }
 
   // ─── ACTIVE GRAPH NODES ─────────────────────────────
@@ -170,7 +182,7 @@ function findStrongAssociations(activeNodes) {
       if (nodeIds.has(edge.to_node_id) && edge.weight >= 1.0) {
         const target = nodeMap.get(edge.to_node_id);
         if (target) {
-          // Avoid duplicates (A→B and B→A)
+          // Avoid duplicates (A\u2192B and B\u2192A)
           const key = [node.label, target.label].sort().join('|');
           if (!associations.find((a) => [a.labelA, a.labelB].sort().join('|') === key)) {
             let description = 'connected';
