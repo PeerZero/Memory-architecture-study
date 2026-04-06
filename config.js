@@ -50,6 +50,7 @@ module.exports = {
     min_node_weight: 0.05,         // below this, don't inject
     max_l2_observations: 20,       // recent L2 entries to include
     max_short_term_messages: 50,   // conversation history cap
+    max_l1_uncondensed: 10,        // recent uncondensed L1 entries to include
   },
 
   // MODELS — route by task cost/quality
