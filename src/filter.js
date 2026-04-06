@@ -6,7 +6,7 @@ const config = require('../config');
 
 const client = new Anthropic();
 
-const FILTER_PROMPT = `You are a memory filter for a conversational AI. Your job is to analyze a user message and extract anything worth remembering to a memory graph.
+const FILTER_PROMPT = `You are a memory filter for a conversational AI that is building two models simultaneously: a model of the USER it is talking to, and a model of ITSELF as it grows through conversation.
 
 For each item you detect, classify it:
 
@@ -28,6 +28,13 @@ For each item, provide:
   - "important" — explicitly marked as important by the user
 - observation: A brief note on how this was mentioned (tone, context, relationship to other things)
 - edges: Array of other items this connects to (by label)
+- identity_relevance: Who this item matters to:
+  - "neutral" — general information, no strong identity connection
+  - "user" — this touches who the user IS (their values, identity, self-concept, recurring concerns, what defines them)
+  - "self" — this reveals something about who the bot is becoming (what it finds interesting, what it cares about, what resonates with it)
+  - "relational" — this exists at the intersection of both identities (shared meaning, something that matters BECAUSE of who they are to each other)
+
+Think of it this way: a bored student memorizes facts (neutral). An interested student connects everything to who they are and what they care about (identity-anchored). Memory that touches identity sticks harder.
 
 If nothing worth remembering exists in the message, return an empty items array.
 
@@ -41,7 +48,8 @@ Format:
       "type": "person",
       "weight": "emotional",
       "observation": "mentioned with slight tension when discussing family dinner",
-      "edges": ["Family Dinner", "Tension"]
+      "edges": ["Family Dinner", "Tension"],
+      "identity_relevance": "user"
     }
   ]
 }`;
@@ -70,12 +78,14 @@ async function runFilter(message) {
     if (!jsonMatch) return { items: [] };
 
     const parsed = JSON.parse(jsonMatch[0]);
+    const VALID_RELEVANCE = new Set(['neutral', 'self', 'user', 'relational']);
     const items = (parsed.items || []).map((item) => ({
       label: String(item.label || '').trim(),
       type: item.type || 'concept',
       weight: WEIGHT_MAP[item.weight] || config.weights.passing_mention,
       observation: String(item.observation || '').trim(),
       edges: Array.isArray(item.edges) ? item.edges.map(String) : [],
+      identityRelevance: VALID_RELEVANCE.has(item.identity_relevance) ? item.identity_relevance : 'neutral',
     })).filter((item) => item.label.length > 0);
 
     return { items };

@@ -37,6 +37,16 @@ module.exports = {
     initial_weight: 0.05,
   },
 
+  // IDENTITY RELEVANCE — the "interested student" multiplier
+  // Memories anchored to identity (self or user) get amplified
+  identity: {
+    self_relevance_multiplier: 1.5,       // weight boost when node touches bot's self-model
+    user_relevance_multiplier: 1.5,       // weight boost when node touches user's identity
+    relational_multiplier: 2.0,           // weight boost when node connects both identities
+    min_self_observations_for_l3: 3,      // self-observations needed before generating self-portrait
+    self_condensation_model: 'claude-sonnet-4-6', // model for self-portrait condensation
+  },
+
   // CONDENSATION TRIGGERS
   condensation: {
     character_threshold: 5000,     // L1 chars before firing
